@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TBCA Explorer | Consulta Nutricional de Alimentos</title>
+    <meta name="description" content="Explore a base de dados da Tabela Brasileira de Composição de Alimentos (TBCA) com busca avançada, filtros por classes e visualização nutricional detalhada de mais de 5.500 itens.">
+    
+    <!-- Google Fonts - Outfit & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar / Header -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M12 7V17M7 12H17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <div class="brand-text">
+                    <h1>TBCA <span>Explorer</span></h1>
+                    <p>Tabela Brasileira de Composição de Alimentos</p>
+                </div>
+            </div>
+            
+            <!-- Buscas e Filtros -->
+            <div class="search-section">
+                <div class="search-box">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+                        <path d="M20 20L16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <input type="text" id="search-input" placeholder="Busque por alimento ou código (ex: Arroz, C0113T)..." autocomplete="off" aria-label="Buscar alimento">
+                    <button id="clear-search-btn" class="clear-btn" aria-label="Limpar busca" style="display: none;">&times;</button>
+                </div>
+            </div>
+            
+            <div class="filter-section">
+                <label for="class-filter" class="filter-label">Filtrar por Classe</label>
+                <div class="custom-select-wrapper">
+                    <select id="class-filter" aria-label="Filtrar por classe de alimento">
+                        <option value="all">Todas as Classes</option>
+                        <!-- Options populated dynamically -->
+                    </select>
+                </div>
+            </div>
+
+            <div class="stats-box">
+                <span class="stats-label">Total Carregado:</span>
+                <span id="total-foods-count" class="stats-value">0</span> alimentos
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="app-main">
+            <!-- Results Counter -->
+            <div class="results-header">
+                <h2 id="results-title">Resultados da busca</h2>
+                <div class="sorting-wrapper">
+                    <label for="sort-select">Ordenar por:</label>
+                    <select id="sort-select" aria-label="Ordenar resultados">
+                        <option value="descricao">Nome (A-Z)</option>
+                        <option value="codigo">Código</option>
+                        <option value="kcal-desc">Calorias (Maior)</option>
+                        <option value="kcal-asc">Calorias (Menor)</option>
+                        <option value="proteina-desc">Proteínas (Maior)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Foods Grid -->
+            <div id="foods-grid" class="foods-grid">
+                <!-- Skeleton loader / Cards populated dynamically -->
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="empty-state" style="display: none;">
+                <div class="empty-icon">🔍</div>
+                <h3>Nenhum alimento encontrado</h3>
+                <p>Tente ajustar a busca ou limpar os filtros de classe selecionados.</p>
+                <button id="reset-filters-btn" class="btn btn-primary">Limpar Filtros</button>
+            </div>
+
+            <!-- Pagination -->
+            <div id="pagination" class="pagination">
+                <button id="prev-page-btn" class="btn btn-pagination" disabled aria-label="Página anterior">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7"/></svg>
+                    Anterior
+                </button>
+                <span id="page-info" class="page-info">Página 1 de 1</span>
+                <button id="next-page-btn" class="btn btn-pagination" disabled aria-label="Próxima página">
+                    Próxima
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg>
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <!-- Nutrient Details Modal -->
+    <div id="nutrient-modal" class="modal-overlay" aria-hidden="true" role="dialog" aria-labelledby="modal-title">
+        <div class="modal-content">
+            <button id="close-modal-btn" class="modal-close-btn" aria-label="Fechar modal">&times;</button>
+            
+            <header class="modal-header">
+                <div class="modal-badge" id="modal-food-code">C0113T</div>
+                <span class="modal-category" id="modal-food-class">Leguminosas e derivados</span>
+                <h2 id="modal-title" class="modal-food-title">Orelha-de-padre, semente, seca, cozida</h2>
+            </header>
+            
+            <div class="modal-body">
+                <!-- Highlights/Macros Summary -->
+                <div class="macros-summary">
+                    <div class="macro-circle-container">
+                        <div class="macro-box energy">
+                            <span class="macro-val" id="macro-energy">121</span>
+                            <span class="macro-unit">kcal</span>
+                            <span class="macro-label">Calorias</span>
+                        </div>
+                    </div>
+                    <div class="macro-bar-container">
+                        <div class="macro-stat">
+                            <div class="macro-stat-header">
+                                <span>Carboidratos</span>
+                                <span id="macro-carbs">23.1g</span>
+                            </div>
+                            <div class="progress-bar-bg"><div id="bar-carbs" class="progress-bar-fill carbs" style="width: 0%;"></div></div>
+                        </div>
+                        <div class="macro-stat">
+                            <div class="macro-stat-header">
+                                <span>Proteínas</span>
+                                <span id="macro-proteins">8.91g</span>
+                            </div>
+                            <div class="progress-bar-bg"><div id="bar-proteins" class="progress-bar-fill proteins" style="width: 0%;"></div></div>
+                        </div>
+                        <div class="macro-stat">
+                            <div class="macro-stat-header">
+                                <span>Lipídios (Gorduras)</span>
+                                <span id="macro-fats">0.58g</span>
+                            </div>
+                            <div class="progress-bar-bg"><div id="bar-fats" class="progress-bar-fill fats" style="width: 0%;"></div></div>
+                        </div>
+                        <div class="macro-stat">
+                            <div class="macro-stat-header">
+                                <span>Fibra Alimentar</span>
+                                <span id="macro-fibers">6.2g</span>
+                            </div>
+                            <div class="progress-bar-bg"><div id="bar-fibers" class="progress-bar-fill fibers" style="width: 0%;"></div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabs navigation -->
+                <nav class="modal-tabs">
+                    <button class="tab-btn active" data-tab="tab-all" id="tab-btn-all">Todos os Nutrientes</button>
+                    <button class="tab-btn" data-tab="tab-minerals" id="tab-btn-minerals">Minerais</button>
+                    <button class="tab-btn" data-tab="tab-vitamins" id="tab-btn-vitamins">Vitaminas</button>
+                    <button class="tab-btn" data-tab="tab-fats" id="tab-btn-fats">Ácidos Graxos</button>
+                </nav>
+
+                <!-- Nutrients Lists -->
+                <div class="tab-content active" id="tab-all">
+                    <div class="nutrients-grid" id="all-nutrients-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+                
+                <div class="tab-content" id="tab-minerals">
+                    <div class="nutrients-grid" id="minerals-nutrients-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-vitamins">
+                    <div class="nutrients-grid" id="vitamins-nutrients-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-fats">
+                    <div class="nutrients-grid" id="fats-nutrients-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+            </div>
+            
+            <footer class="modal-footer">
+                <p>* Valores de referência baseados em 100g de porção comestível. Fonte: TBCA/USP.</p>
+            </footer>
+        </div>
+    </div>
+
+    <!-- App Script -->
+    <script src="app.js"></script>
+</body>
+</html>

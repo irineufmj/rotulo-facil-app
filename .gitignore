@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit
+.streamlit/
+
+# Local databases and user data
+receitas_salvas.json
+custom_ingredients.csv
+
+# Large SQL dumps (not needed for online app execution)
+tbca.sql
+tbca_taco.sql
+
+# Log files
+*.log
