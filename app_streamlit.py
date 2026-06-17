@@ -967,21 +967,32 @@ with tab_app:
             """
             st.markdown(table_html, unsafe_allow_html=True)
             
-            # --- Renderização Visual das Lupas ---
+            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA SVG) ---
             if alto_acucar or alto_gordura or alto_sodio:
-                lupa_html = """
-                <div class="lupa-box">
-                    <span class="lupa-icon">🔍</span>
-                    <div>
-                        <div class="lupa-text-bold">Alto em:</div>
-                """
-                if alto_acucar:
-                    lupa_html += "• AÇÚCAR ADICIONADO<br>"
-                if alto_gordura:
-                    lupa_html += "• GORDURA SATURADA<br>"
-                if alto_sodio:
-                    lupa_html += "• SÓDIO<br>"
-                lupa_html += """
+                nutrients_list = []
+                if alto_acucar: nutrients_list.append("AÇÚCAR ADICIONADO")
+                if alto_gordura: nutrients_list.append("GORDURA SATURADA")
+                if alto_sodio: nutrients_list.append("SÓDIO")
+                
+                nutrients_html = "".join([f"• {n}<br>" for n in nutrients_list])
+                
+                lupa_html = f"""
+                <div style="border: 3px solid black; background-color: white; padding: 10px; max-width: 320px; font-family: Arial, sans-serif; color: black; display: flex; align-items: center; border-radius: 4px; margin: 15px auto;">
+                    <!-- SVG Lupa Magnifier -->
+                    <div style="flex-shrink: 0; margin-right: 15px; display: flex; align-items: center; justify-content: center;">
+                        <svg viewBox="0 0 100 100" width="45" height="45">
+                            <circle cx="42" cy="42" r="20" stroke="black" stroke-width="7" fill="white" />
+                            <line x1="56" y1="56" x2="80" y2="80" stroke="black" stroke-width="9" stroke-linecap="round" />
+                            <line x1="53" y1="53" x2="59" y2="59" stroke="black" stroke-width="11" />
+                            <path d="M28 32 A14 14 0 0 1 48 24" stroke="black" stroke-width="2.5" fill="none" stroke-linecap="round" />
+                        </svg>
+                    </div>
+                    <!-- Text Content -->
+                    <div style="display: flex; flex-direction: column; justify-content: center; text-align: left;">
+                        <div style="font-weight: 900; font-size: 15px; letter-spacing: 0.5px; line-height: 1.1; margin-bottom: 2px; color: black !important;">ALTO EM</div>
+                        <div style="font-weight: 800; font-size: 11px; line-height: 1.3; letter-spacing: 0.2px; color: black !important;">
+                            {nutrients_html}
+                        </div>
                     </div>
                 </div>
                 """
@@ -1088,28 +1099,50 @@ with tab_app:
                 story.append(t)
                 story.append(Spacer(1, 15))
                 
-                # Adicionar Lupa de aviso se houver
+                # Adicionar Lupa de aviso se houver (Vetorizado em PDF)
                 if alto_acucar or alto_gordura or alto_sodio:
                     lupa_items = []
                     if alto_acucar: lupa_items.append("AÇÚCAR ADICIONADO")
                     if alto_gordura: lupa_items.append("GORDURA SATURADA")
                     if alto_sodio: lupa_items.append("SÓDIO")
                     
-                    lupa_p = f"<b>ALTO EM:</b><br/>" + "<br/>".join([f"• {item}" for item in lupa_items])
+                    # Desenhar a lupa oficial usando ReportLab Shapes
+                    from reportlab.graphics.shapes import Drawing, Circle, Line, Rect, String
                     
-                    lupa_table_data = [[
-                        Paragraph("<font size=20>🔍</font>", body_style),
-                        Paragraph(lupa_p, ParagraphStyle('LupaText', parent=body_style, fontSize=11, leading=14))
-                    ]]
+                    # Altura dinâmica baseada no número de itens
+                    num_items = len(lupa_items)
+                    box_height = 30 + (num_items * 13)
+                    box_width = 230
                     
-                    lupa_table = Table(lupa_table_data, colWidths=[30, 200])
-                    lupa_table.setStyle(TableStyle([
-                        ('BOX', (0, 0), (-1, -1), 2, colors.black),
-                        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                        ('PADDING', (0, 0), (-1, -1), 8)
-                    ]))
-                    story.append(lupa_table)
+                    lupa_draw = Drawing(box_width, box_height)
+                    
+                    # Caixa com borda preta grossa e fundo branco
+                    lupa_draw.add(Rect(0, 0, box_width, box_height, strokeColor=colors.black, fillColor=colors.white, strokeWidth=2))
+                    
+                    # Desenhar lupa (Magnifying Glass)
+                    g_x = 22
+                    g_y = box_height / 2 + 2 # Ajustar centro
+                    
+                    # Lente (círculo)
+                    lupa_draw.add(Circle(g_x, g_y, 10, strokeColor=colors.black, fillColor=colors.white, strokeWidth=3))
+                    # Cabo da lupa (diagonal para baixo e para a direita)
+                    lupa_draw.add(Line(g_x + 7, g_y - 7, g_x + 16, g_y - 16, strokeColor=colors.black, strokeWidth=4, strokeLineCap=1))
+                    
+                    # Adicionar texto "ALTO EM"
+                    s_title = String(45, box_height - 15, "ALTO EM")
+                    s_title.fontName = "Helvetica-Bold"
+                    s_title.fontSize = 11
+                    lupa_draw.add(s_title)
+                    
+                    # Adicionar os nutrientes
+                    for idx, item in enumerate(lupa_items):
+                        y_pos = box_height - 27 - (idx * 11)
+                        s_item = String(45, y_pos, f"• {item}")
+                        s_item.fontName = "Helvetica-Bold"
+                        s_item.fontSize = 8
+                        lupa_draw.add(s_item)
+                        
+                    story.append(lupa_draw)
                     story.append(Spacer(1, 15))
                 
                 # Informações de ingredientes e alérgenos
