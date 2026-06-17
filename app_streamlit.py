@@ -347,7 +347,38 @@ with tab_app:
         filtered_for_recipe = []
         q = search_query.lower().strip()
         if q:
-            filtered_for_recipe = [f for f in foods_data if q in f["d"].lower() or q in f["c"].lower()]
+            # Filtrar ingredientes que contêm o termo buscado
+            matched_foods = [f for f in foods_data if q in f["d"].lower() or q in f["c"].lower()]
+            
+            # Função de cálculo de score de relevância (menor score = maior prioridade)
+            def get_match_score(food):
+                desc = food["d"].lower()
+                code = food["c"].lower()
+                
+                # 1. Correspondência exata de código
+                if code == q:
+                    return (0, 0, 0, len(desc))
+                    
+                # 2. Correspondência na descrição
+                pos = desc.find(q)
+                if pos >= 0:
+                    is_start = 0 if pos == 0 else 1
+                    # Verificar se o termo é uma palavra inteira (fronteira de palavra)
+                    before_char_ok = (pos == 0 or not desc[pos-1].isalnum())
+                    after_char_ok = (pos + len(q) == len(desc) or not desc[pos + len(q)].isalnum())
+                    word_boundary = 0 if (before_char_ok and after_char_ok) else 1
+                    
+                    return (1, is_start, word_boundary, pos, len(desc))
+                    
+                # 3. Correspondência parcial de código
+                pos_code = code.find(q)
+                if pos_code >= 0:
+                    return (2, 0, 0, pos_code, len(desc))
+                    
+                return (3, 0, 0, 0, len(desc))
+                
+            # Ordenar os resultados por relevância
+            filtered_for_recipe = sorted(matched_foods, key=get_match_score)
         else:
             filtered_for_recipe = foods_data[:20] # Top 20 como padrão
             
