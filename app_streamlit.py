@@ -256,6 +256,95 @@ def round_anvisa(value, nutrient_name):
         return f"{res}".replace('.', ',')
     else:
         return f"{int(dec_round(value, 0))}"
+def generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio):
+    active_nutrients = []
+    if alto_acucar:
+        active_nutrients.append("AÇÚCAR ADICIONADO")
+    if alto_gordura:
+        active_nutrients.append("GORDURA SATURADA")
+    if alto_sodio:
+        active_nutrients.append("SÓDIO")
+        
+    num_nutrients = len(active_nutrients)
+    if num_nutrients == 0:
+        return ""
+        
+    # Dimensões dinâmicas (Largura 180 é o padrão ANVISA para lupas empilhadas)
+    width = 180
+    height = 15 + 45 + (num_nutrients * 60) # 1: 120, 2: 180, 3: 240
+    
+    svg = f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">'
+    # Borda externa com cantos arredondados
+    svg += f'<rect x="4" y="4" width="{width - 8}" height="{height - 8}" rx="15" ry="15" stroke="black" stroke-width="4" fill="white" />'
+    
+    # Caixa retangular interna "ALTO EM"
+    svg += '<rect x="15" y="15" width="150" height="38" rx="19" ry="19" stroke="black" stroke-width="4" fill="white" />'
+    
+    # Lente da lupa (círculo com borda grossa)
+    svg += '<circle cx="36" cy="34" r="12" stroke="black" stroke-width="4" fill="white" />'
+    # Cabo apontando para baixo-esquerda (exatamente como nas imagens da ANVISA)
+    svg += '<line x1="28" y1="42" x2="16" y2="54" stroke="black" stroke-width="6" stroke-linecap="round" />'
+    # Conexão do cabo à lente
+    svg += '<line x1="26" y1="40" x2="30" y2="44" stroke="black" stroke-width="8" />'
+    # Reflexo interno da lente
+    svg += '<path d="M29 32 A 8 8 0 0 1 41 28" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" />'
+    
+    # Texto "ALTO EM"
+    svg += '<text x="105" y="40" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="15" fill="black" text-anchor="middle">ALTO EM</text>'
+    
+    # Blocos de nutrientes empilhados verticalmente
+    y_start = 63
+    for i, nut in enumerate(active_nutrients):
+        y_pos = y_start + (i * 55)
+        # Caixa preta do nutriente com cantos levemente arredondados
+        svg += f'<rect x="15" y="{y_pos}" width="150" height="50" rx="12" ry="12" fill="black" />'
+        
+        # Inserir o texto do nutriente em branco
+        if nut == "SÓDIO":
+            svg += f'<text x="90" y="{y_pos + 31}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="15" fill="white" text-anchor="middle">SÓDIO</text>'
+        elif nut == "AÇÚCAR ADICIONADO":
+            svg += f'<text x="90" y="{y_pos + 21}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">AÇÚCAR</text>'
+            svg += f'<text x="90" y="{y_pos + 38}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">ADICIONADO</text>'
+        elif nut == "GORDURA SATURADA":
+            svg += f'<text x="90" y="{y_pos + 21}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">GORDURA</text>'
+            svg += f'<text x="90" y="{y_pos + 38}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">SATURADA</text>'
+            
+    svg += '</svg>'
+    return svg
+
+import base64
+
+def get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio):
+    db_path = "lupas_db.json"
+    if not os.path.exists(db_path):
+        db_path = os.path.join(os.path.dirname(__file__), "lupas_db.json")
+    
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                db = json.load(f)
+            for key, val in db.items():
+                if val.get("acucar") == alto_acucar and val.get("gordura") == alto_gordura and val.get("sodio") == alto_sodio:
+                    filename = val.get("filename")
+                    img_path = os.path.join("lupas", filename)
+                    if not os.path.exists(img_path):
+                        img_path = os.path.join(os.path.dirname(__file__), "lupas", filename)
+                    if os.path.exists(img_path):
+                        return img_path
+        except Exception as e:
+            pass
+    return None
+
+def get_lupa_html(alto_acucar, alto_gordura, alto_sodio, width_px=180):
+    img_path = get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio)
+    if img_path:
+        try:
+            with open(img_path, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+            return f'<img src="data:image/png;base64,{encoded_string}" width="{width_px}" style="display: block; margin: 0 auto;" />'
+        except Exception as e:
+            pass
+    return generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio)
 
 USERS_JSON_PATH = "usuarios.json"
 
@@ -967,36 +1056,21 @@ with tab_app:
             """
             st.markdown(table_html, unsafe_allow_html=True)
             
-            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA SVG) ---
+            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
             if alto_acucar or alto_gordura or alto_sodio:
-                nutrients_list = []
-                if alto_acucar: nutrients_list.append("AÇÚCAR ADICIONADO")
-                if alto_gordura: nutrients_list.append("GORDURA SATURADA")
-                if alto_sodio: nutrients_list.append("SÓDIO")
+                lupa_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
                 
-                nutrients_html = "".join([f"• {n}<br>" for n in nutrients_list])
+                # 1. Exibir no painel de visualização (centro da coluna)
+                st.markdown(f'<div style="display: flex; justify-content: center; margin: 20px 0;">{lupa_html}</div>', unsafe_allow_html=True)
                 
-                lupa_html = f"""
-                <div style="border: 3px solid black; background-color: white; padding: 10px; max-width: 320px; font-family: Arial, sans-serif; color: black; display: flex; align-items: center; border-radius: 4px; margin: 15px auto;">
-                    <!-- SVG Lupa Magnifier -->
-                    <div style="flex-shrink: 0; margin-right: 15px; display: flex; align-items: center; justify-content: center;">
-                        <svg viewBox="0 0 100 100" width="45" height="45">
-                            <circle cx="42" cy="42" r="20" stroke="black" stroke-width="7" fill="white" />
-                            <line x1="56" y1="56" x2="80" y2="80" stroke="black" stroke-width="9" stroke-linecap="round" />
-                            <line x1="53" y1="53" x2="59" y2="59" stroke="black" stroke-width="11" />
-                            <path d="M28 32 A14 14 0 0 1 48 24" stroke="black" stroke-width="2.5" fill="none" stroke-linecap="round" />
-                        </svg>
-                    </div>
-                    <!-- Text Content -->
-                    <div style="display: flex; flex-direction: column; justify-content: center; text-align: left;">
-                        <div style="font-weight: 900; font-size: 15px; letter-spacing: 0.5px; line-height: 1.1; margin-bottom: 2px; color: black !important;">ALTO EM</div>
-                        <div style="font-weight: 800; font-size: 11px; line-height: 1.3; letter-spacing: 0.2px; color: black !important;">
-                            {nutrients_html}
-                        </div>
-                    </div>
+                # 2. Exibir no canto superior esquerdo da janela (badge flutuante)
+                floating_lupa_html = f"""
+                <div style="position: fixed; top: 75px; left: 15px; z-index: 99999; background: white; padding: 10px; border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,0.18); border: 2px solid black;">
+                    <div style="font-family: Arial, sans-serif; font-size: 8px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; color: #555; text-align: center; margin-bottom: 5px;">Rotulagem Frontal</div>
+                    {lupa_html}
                 </div>
                 """
-                st.markdown(lupa_html, unsafe_allow_html=True)
+                st.markdown(floating_lupa_html, unsafe_allow_html=True)
                 
             # --- Lista de Ingredientes Decrescente ---
             # Ordenar ingredientes por peso decrescente
@@ -1099,51 +1173,93 @@ with tab_app:
                 story.append(t)
                 story.append(Spacer(1, 15))
                 
-                # Adicionar Lupa de aviso se houver (Vetorizado em PDF)
+                # Adicionar Lupa de aviso se houver
                 if alto_acucar or alto_gordura or alto_sodio:
-                    lupa_items = []
-                    if alto_acucar: lupa_items.append("AÇÚCAR ADICIONADO")
-                    if alto_gordura: lupa_items.append("GORDURA SATURADA")
-                    if alto_sodio: lupa_items.append("SÓDIO")
+                    img_path = get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio)
+                    if img_path:
+                        try:
+                            from reportlab.platypus import Image as RLImage
+                            from PIL import Image as PILImage
+                            with PILImage.open(img_path) as pil_img:
+                                w_px, h_px = pil_img.size
+                            aspect = h_px / w_px
+                            pdf_width = 120 # em pontos
+                            pdf_height = pdf_width * aspect
+                            story.append(RLImage(img_path, width=pdf_width, height=pdf_height))
+                            story.append(Spacer(1, 15))
+                        except Exception as e:
+                            # Fallback em caso de erro ao ler/processar imagem
+                            img_path = None
                     
-                    # Desenhar a lupa oficial usando ReportLab Shapes
-                    from reportlab.graphics.shapes import Drawing, Circle, Line, Rect, String
-                    
-                    # Altura dinâmica baseada no número de itens
-                    num_items = len(lupa_items)
-                    box_height = 30 + (num_items * 13)
-                    box_width = 230
-                    
-                    lupa_draw = Drawing(box_width, box_height)
-                    
-                    # Caixa com borda preta grossa e fundo branco
-                    lupa_draw.add(Rect(0, 0, box_width, box_height, strokeColor=colors.black, fillColor=colors.white, strokeWidth=2))
-                    
-                    # Desenhar lupa (Magnifying Glass)
-                    g_x = 22
-                    g_y = box_height / 2 + 2 # Ajustar centro
-                    
-                    # Lente (círculo)
-                    lupa_draw.add(Circle(g_x, g_y, 10, strokeColor=colors.black, fillColor=colors.white, strokeWidth=3))
-                    # Cabo da lupa (diagonal para baixo e para a direita)
-                    lupa_draw.add(Line(g_x + 7, g_y - 7, g_x + 16, g_y - 16, strokeColor=colors.black, strokeWidth=4, strokeLineCap=1))
-                    
-                    # Adicionar texto "ALTO EM"
-                    s_title = String(45, box_height - 15, "ALTO EM")
-                    s_title.fontName = "Helvetica-Bold"
-                    s_title.fontSize = 11
-                    lupa_draw.add(s_title)
-                    
-                    # Adicionar os nutrientes
-                    for idx, item in enumerate(lupa_items):
-                        y_pos = box_height - 27 - (idx * 11)
-                        s_item = String(45, y_pos, f"• {item}")
-                        s_item.fontName = "Helvetica-Bold"
-                        s_item.fontSize = 8
-                        lupa_draw.add(s_item)
+                    if not img_path:
+                        # Fallback: Lupa Vetorizada (Estilo Oficial ANVISA)
+                        lupa_items = []
+                        if alto_acucar: lupa_items.append("AÇÚCAR ADICIONADO")
+                        if alto_gordura: lupa_items.append("GORDURA SATURADA")
+                        if alto_sodio: lupa_items.append("SÓDIO")
                         
-                    story.append(lupa_draw)
-                    story.append(Spacer(1, 15))
+                        from reportlab.graphics.shapes import Drawing, Circle, Line, Rect, String
+                        
+                        num_items = len(lupa_items)
+                        box_width = 120
+                        box_height = 15 + 35 + (num_items * 40)
+                        
+                        lupa_draw = Drawing(box_width, box_height)
+                        
+                        # 1. Borda externa com cantos arredondados
+                        lupa_draw.add(Rect(2, 2, box_width - 4, box_height - 4, rx=10, ry=10, strokeColor=colors.black, fillColor=colors.white, strokeWidth=2.5))
+                        
+                        # 2. Caixa "ALTO EM"
+                        lupa_draw.add(Rect(10, box_height - 42, 100, 28, rx=14, ry=14, strokeColor=colors.black, fillColor=colors.white, strokeWidth=2))
+                        
+                        # Lente da lupa (círculo)
+                        g_x = 24
+                        g_y = box_height - 28
+                        lupa_draw.add(Circle(g_x, g_y, 8, strokeColor=colors.black, fillColor=colors.white, strokeWidth=2))
+                        # Cabo apontando para baixo-esquerda (conforme imagens oficiais da ANVISA)
+                        lupa_draw.add(Line(g_x - 5, g_y - 5, g_x - 11, g_y - 11, strokeColor=colors.black, strokeWidth=3, strokeLineCap=1))
+                        
+                        # Texto "ALTO EM"
+                        s_title = String(67, box_height - 32, "ALTO EM")
+                        s_title.fontName = "Helvetica-Bold"
+                        s_title.fontSize = 10
+                        s_title.textAnchor = "middle"
+                        lupa_draw.add(s_title)
+                        
+                        # 3. Blocos de nutrientes empilhados
+                        y_start = box_height - 52
+                        for idx, item in enumerate(lupa_items):
+                            y_pos = y_start - 35 - (idx * 37)
+                            # Retângulo preto
+                            lupa_draw.add(Rect(10, y_pos, 100, 32, rx=8, ry=8, fillColor=colors.black, strokeColor=colors.black))
+                            
+                            # Texto do nutriente
+                            if item == "SÓDIO":
+                                s_item = String(60, y_pos + 12, "SÓDIO")
+                                s_item.fontName = "Helvetica-Bold"
+                                s_item.fontSize = 10
+                                s_item.fillColor = colors.white
+                                s_item.textAnchor = "middle"
+                                lupa_draw.add(s_item)
+                            else:
+                                # Duas linhas para texto longo
+                                words = item.split(" ")
+                                s_line1 = String(60, y_pos + 18, words[0])
+                                s_line1.fontName = "Helvetica-Bold"
+                                s_line1.fontSize = 8
+                                s_line1.fillColor = colors.white
+                                s_line1.textAnchor = "middle"
+                                lupa_draw.add(s_line1)
+                                
+                                s_line2 = String(60, y_pos + 7, words[1])
+                                s_line2.fontName = "Helvetica-Bold"
+                                s_line2.fontSize = 8
+                                s_line2.fillColor = colors.white
+                                s_line2.textAnchor = "middle"
+                                lupa_draw.add(s_line2)
+                                
+                        story.append(lupa_draw)
+                        story.append(Spacer(1, 15))
                 
                 # Informações de ingredientes e alérgenos
                 story.append(Paragraph("<b>DECLARAÇÃO DE INGREDIENTES E AVISOS LEGAIS</b>", section_style))

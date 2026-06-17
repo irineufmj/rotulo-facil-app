@@ -1,0 +1,37 @@
+{
+    "sodio": {
+        "filename": "lupa_sodio.png",
+        "acucar": false,
+        "gordura": false,
+        "sodio": true,
+        "descricao": "Alto em Sódio"
+    },
+    "acucar": {
+        "filename": "lupa_acucar.png",
+        "acucar": true,
+        "gordura": false,
+        "sodio": false,
+        "descricao": "Alto em Açúcar Adicionado"
+    },
+    "gordura": {
+        "filename": "lupa_gordura.png",
+        "acucar": false,
+        "gordura": true,
+        "sodio": false,
+        "descricao": "Alto em Gordura Saturada"
+    },
+    "acucar_gordura": {
+        "filename": "lupa_acucar_gordura.png",
+        "acucar": true,
+        "gordura": true,
+        "sodio": false,
+        "descricao": "Alto em Açúcar Adicionado e Gordura Saturada"
+    },
+    "acucar_gordura_sodio": {
+        "filename": "lupa_acucar_gordura_sodio.png",
+        "acucar": true,
+        "gordura": true,
+        "sodio": true,
+        "descricao": "Alto em Açúcar Adicionado, Gordura Saturada e Sódio"
+    }
+}
