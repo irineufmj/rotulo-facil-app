@@ -183,6 +183,8 @@ if "allergens_may_contain" not in st.session_state:
     st.session_state.allergens_may_contain = []
 if "calculated" not in st.session_state:
     st.session_state.calculated = False
+if "product_type" not in st.session_state:
+    st.session_state.product_type = "Sólido ou Semissólido"
 
 # --- VALORES DIÁRIOS DE REFERÊNCIA (VDR) ANVISA ---
 VDR = {
@@ -270,6 +272,7 @@ def save_recipe(name):
         "allergens_direct": st.session_state.allergens_direct,
         "allergens_deriv": st.session_state.allergens_deriv,
         "allergens_may_contain": st.session_state.allergens_may_contain,
+        "product_type": st.session_state.product_type,
         "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
@@ -445,23 +448,33 @@ with tab_app:
                 
                 # Parâmetros de Rendimento
                 st.markdown("##### ⚖️ Rendimento e Porcionamento (Obrigatório)")
-                col_rend1, col_rend2 = st.columns(2)
+                col_rend1, col_rend2, col_rend3 = st.columns(3)
+                
+                product_type_options = ["Sólido ou Semissólido", "Líquido"]
+                product_type_index = product_type_options.index(st.session_state.product_type) if st.session_state.product_type in product_type_options else 0
+                product_type = col_rend1.selectbox(
+                    "Tipo de Alimento:",
+                    options=product_type_options,
+                    index=product_type_index,
+                    key="product_type_widget",
+                    help="Determina os limites oficiais da ANVISA para os alertas da lupa frontal."
+                )
                 
                 # Garante que o peso final não seja 0 se tiver ingredientes
                 total_raw_weight = sum(ing["w"] for ing in st.session_state.recipe)
                 if st.session_state.weight_final <= 0.0:
                     st.session_state.weight_final = total_raw_weight
                 
-                weight_final = col_rend1.number_input(
-                    "Peso Final do Produto Pronto (g):",
+                weight_final = col_rend2.number_input(
+                    "Peso/Vol. Final do Pronto (g/ml):",
                     min_value=1.0,
                     value=float(st.session_state.weight_final),
                     key="weight_final_widget",
-                    help="O peso total após cozimento. Considera perda por evaporação ou ganho de água."
+                    help="O peso/volume total após cozimento. Considera perda por evaporação ou ganho de água."
                 )
                 
-                portion_size = col_rend2.number_input(
-                    "Tamanho da Porção Comercial (g):",
+                portion_size = col_rend3.number_input(
+                    "Tamanho da Porção (g/ml):",
                     min_value=1.0,
                     value=float(st.session_state.portion_size),
                     step=5.0,
@@ -499,7 +512,7 @@ with tab_app:
                 )
                 
                 allergens_list = [
-                    "Trigo", "Centeio", "Cevada", "Aveia", "Crustáceos", "Ovos", "Peixes", 
+                    "Trigo", "Centeio", "Cevada", "Aveia", "Crustáceos", "Ovos", "Pe魚es", 
                     "Amendoim", "Soja", "Leite", "Amêndoa", "Avelãs", "Castanha-de-caju", 
                     "Castanha-do-pará", "Macadâmias", "Nozes", "Pecãs", "Pistaches", "Pinoli"
                 ]
@@ -544,6 +557,7 @@ with tab_app:
                     st.session_state.allergens_direct = selected_allergens_direct
                     st.session_state.allergens_deriv = selected_allergens_deriv
                     st.session_state.allergens_may_contain = selected_allergens_may_contain
+                    st.session_state.product_type = product_type
                     
                     if len(processed_recipe) == 0:
                         st.session_state.calculated = False
@@ -567,6 +581,7 @@ with tab_app:
         allergens_direct = st.session_state.allergens_direct
         allergens_deriv = st.session_state.allergens_deriv
         allergens_may_contain = st.session_state.allergens_may_contain
+        product_type = st.session_state.get("product_type", "Sólido ou Semissólido")
 
         # 1. Somar nutrientes totais ponderados pelo peso dos ingredientes
         raw_totals = {
@@ -617,10 +632,21 @@ with tab_app:
             vd_percents[key] = round((totals_portion[key] / vdr_val) * 100)
             
         # --- VERIFICAÇÃO DE ROTULAGEM FRONTAL (LUPA) ---
-        # Regra: Limites para Sólidos por 100g
-        alto_acucar = totals_100g["Açúcares adicionados (g)"] >= 15.0
-        alto_gordura = totals_100g["Gorduras saturadas (g)"] >= 6.0
-        alto_sodio = totals_100g["Sódio (mg)"] >= 600.0
+        # Limites de acordo com IN 75/2020 (Sólidos vs Líquidos)
+        if product_type == "Líquido":
+            alto_acucar = totals_100g["Açúcares adicionados (g)"] >= 7.5
+            alto_gordura = totals_100g["Gorduras saturadas (g)"] >= 3.0
+            alto_sodio = totals_100g["Sódio (mg)"] >= 300.0
+            col_100_label = "100 ml"
+            col_portion_label = f"{int(portion_size)} ml"
+            col_unit = "ml"
+        else:
+            alto_acucar = totals_100g["Açúcares adicionados (g)"] >= 15.0
+            alto_gordura = totals_100g["Gorduras saturadas (g)"] >= 6.0
+            alto_sodio = totals_100g["Sódio (mg)"] >= 600.0
+            col_100_label = "100 g"
+            col_portion_label = f"{int(portion_size)} g"
+            col_unit = "g"
 
         # --- APLICAR ARREDONDAMENTOS PARA EXIBIÇÃO ---
         display_100g = {}
@@ -657,13 +683,13 @@ with tab_app:
                     <tr>
                         <td colspan="4" style="border-bottom: 2px solid #000;">
                             {n_porcoes_str} porções por embalagem<br>
-                            Porção: {int(portion_size)} g ({case_measure})
+                            Porção: {int(portion_size)} {col_unit} ({case_measure})
                         </td>
                     </tr>
                     <tr style="font-weight: bold; text-align: center; background-color: #eee;">
-                        <td>Colunas</td>
-                        <td style="text-align: right; width: 60px;">100 g</td>
-                        <td style="text-align: right; width: 70px;">{int(portion_size)} g</td>
+                         <td>Colunas</td>
+                         <td style="text-align: right; width: 60px;">{col_100_label}</td>
+                         <td style="text-align: right; width: 70px;">{col_portion_label}</td>
                         <td style="text-align: right; width: 50px;">%VD*</td>
                     </tr>
                     <tr>
@@ -792,6 +818,13 @@ with tab_app:
             
             # --- GERAÇÃO DE PDF EM MEMÓRIA E DOWNLOAD ---
             
+            from reportlab.lib.pagesizes import letter
+            from reportlab.pdfgen import canvas
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            import io
+            
             def create_pdf():
                 pdf_buffer = io.BytesIO()
                 doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
@@ -810,8 +843,8 @@ with tab_app:
                 # Dados da tabela
                 table_data = [
                     [Paragraph("<b>INFORMAÇÃO NUTRICIONAL</b>", ParagraphStyle('H', parent=body_style, fontName='Helvetica-Bold', fontSize=11)), "", "", ""],
-                    [Paragraph(f"{n_porcoes_str} porções por embalagem<br/>Porção: {int(portion_size)} g ({case_measure})", body_style), "", "", ""],
-                    ["", "100 g", f"{int(portion_size)} g", "%VD*"],
+                    [Paragraph(f"{n_porcoes_str} porções por embalagem<br/>Porção: {int(portion_size)} {col_unit} ({case_measure})", body_style), "", "", ""],
+                    ["", col_100_label, col_portion_label, "%VD*"],
                     ["Valor energético (kcal)", display_100g['Energia (kcal)'], display_portion['Energia (kcal)'], str(int(vd_percents['Energia (kcal)']))],
                     ["Carboidratos (g)", display_100g['Carboidrato total (g)'], display_portion['Carboidrato total (g)'], str(int(vd_percents['Carboidrato total (g)']))],
                     ["  Açúcares totais (g)", display_100g['Açúcares totais (g)'], display_portion['Açúcares totais (g)'], "-"],
@@ -957,6 +990,7 @@ with tab_receitas:
                 st.markdown(f"""
                 - **Glúten:** {recipe['gluten_opt']}
                 - **Lactose:** {recipe['lactose_opt']}
+                - **Tipo:** {recipe.get('product_type', 'Sólido ou Semissólido')}
                 - **Contém:** {', '.join(recipe.get('allergens_direct', [])) if recipe.get('allergens_direct') else 'Nenhum'}
                 - **Contém Derivados de:** {', '.join(recipe.get('allergens_deriv', [])) if recipe.get('allergens_deriv') else 'Nenhum'}
                 - **Pode Conter:** {', '.join(recipe.get('allergens_may_contain', [])) if recipe.get('allergens_may_contain') else 'Nenhum'}
@@ -976,6 +1010,7 @@ with tab_receitas:
                     st.session_state.allergens_direct = recipe.get("allergens_direct", recipe.get("selected_allergens", []))
                     st.session_state.allergens_deriv = recipe.get("allergens_deriv", [])
                     st.session_state.allergens_may_contain = recipe.get("allergens_may_contain", [])
+                    st.session_state.product_type = recipe.get("product_type", "Sólido ou Semissólido")
                     st.session_state.calculated = True
                     st.toast(f"Receita **{selected_name}** carregada com sucesso!")
                     st.rerun()
