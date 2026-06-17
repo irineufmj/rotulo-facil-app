@@ -211,10 +211,59 @@ VDR = {
 # --- FUNÇÕES AUXILIARES DE PROCESSAMENTO ---
 
 # Obter valor numérico seguro do nutriente
-def get_num_val(nutrients_dict, key):
-    val = nutrients_dict.get(key, 0.0)
+NUTRIENT_KEY_MAPPING = {
+    "Energia (kcal)": ["Energia (kcal)"],
+    "Carboidrato total (g)": ["Carboidrato total (g)", "Carboidrato disponível (g)", "Carboidrato disponí\xadvel (g)"],
+    "Açúcares adicionados (g)": ["Açúcares adicionados (g)", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
+    "Açúcares totais (g)": ["Açúcares totais (g)", "Açúcares totais", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
+    "Proteína (g)": ["Proteína (g)", "Prote\u00edna (g)", "Protena (g)"],
+    "Lipídios (g)": ["Lipídios (g)", "Lip\u00eddios (g)", "Lipdios (g)"],
+    "Gorduras saturadas (g)": ["Gorduras saturadas (g)", "Ácidos graxos saturados (g)", "\u00c1cidos graxos saturados (g)", "cidos graxos saturados (g)"],
+    "Gorduras trans (g)": ["Gorduras trans (g)", "Ácidos graxos trans (g)", "\u00c1cidos graxos trans (g)", "cidos graxos trans (g)"],
+    "Fibra alimentar (g)": ["Fibra alimentar (g)"],
+    "Sódio (mg)": ["Sódio (mg)", "S\u00f3dio (mg)", "Sdio (mg)"]
+}
+
+def get_num_val(nutrients_dict, key, food_desc=""):
+    candidates = NUTRIENT_KEY_MAPPING.get(key, [key])
+    val = None
+    
+    # 1. Procurar nas chaves candidatas
+    for cand in candidates:
+        if cand in nutrients_dict:
+            val = nutrients_dict[cand]
+            break
+            
+    # 2. Se não encontrar e for açúcar/mel puro na TACO, faz fallback
+    if val is None and key in ["Açúcares adicionados (g)", "Açúcares totais (g)"] and food_desc:
+        desc_lower = food_desc.lower()
+        is_sugar_product = (
+            "açúcar" in desc_lower or 
+            "acucar" in desc_lower or 
+            "melaço" in desc_lower or 
+            "melaco" in desc_lower or 
+            desc_lower == "mel" or 
+            desc_lower.startswith("mel ") or 
+            desc_lower.startswith("mel,")
+        )
+        if is_sugar_product:
+            val = get_num_val(nutrients_dict, "Carboidrato total (g)")
+            
+    if val is None:
+        return 0.0
+        
     if isinstance(val, (int, float)):
         return float(val)
+        
+    if isinstance(val, str):
+        val_clean = val.strip().lower()
+        if val_clean in ["tr", "nd", "na", "", "-", "n.d."]:
+            return 0.0
+        try:
+            return float(val_clean.replace(',', '.'))
+        except ValueError:
+            return 0.0
+            
     return 0.0
 
 # Regra de arredondamento ANVISA (IN 75/2020)
@@ -888,21 +937,25 @@ with tab_app:
         for ing in st.session_state.recipe:
             factor = ing["w"] / 100.0
             
-            raw_totals["Energia (kcal)"] += get_num_val(ing["n"], "Energia (kcal)") * factor
+            raw_totals["Energia (kcal)"] += get_num_val(ing["n"], "Energia (kcal)", ing["d"]) * factor
             
-            carb = ing["n"].get("Carboidrato total (g)", ing["n"].get("Carboidrato disponível (g)", 0.0))
-            raw_totals["Carboidrato total (g)"] += get_num_val({"c": carb}, "c") * factor
+            carb = get_num_val(ing["n"], "Carboidrato total (g)", ing["d"])
+            raw_totals["Carboidrato total (g)"] += carb * factor
             
-            sug_tot = ing["n"].get("Açúcares totais (g)", ing["n"].get("Açúcares adicionados (g)", 0.0))
-            raw_totals["Açúcares totais (g)"] += get_num_val({"s": sug_tot}, "s") * factor
+            sug_add = get_num_val(ing["n"], "Açúcares adicionados (g)", ing["d"])
+            raw_totals["Açúcares adicionados (g)"] += sug_add * factor
             
-            raw_totals["Açúcares adicionados (g)"] += get_num_val(ing["n"], "Açúcares adicionados (g)") * factor
-            raw_totals["Proteína (g)"] += get_num_val(ing["n"], "Proteína (g)") * factor
-            raw_totals["Lipídios (g)"] += get_num_val(ing["n"], "Lipídios (g)") * factor
-            raw_totals["Gorduras saturadas (g)"] += get_num_val(ing["n"], "Gorduras saturadas (g)") * factor
-            raw_totals["Gorduras trans (g)"] += get_num_val(ing["n"], "Gorduras trans (g)") * factor
-            raw_totals["Fibra alimentar (g)"] += get_num_val(ing["n"], "Fibra alimentar (g)") * factor
-            raw_totals["Sódio (mg)"] += get_num_val(ing["n"], "Sódio (mg)") * factor
+            sug_tot = get_num_val(ing["n"], "Açúcares totais (g)", ing["d"])
+            if sug_tot == 0.0 and sug_add > 0.0:
+                sug_tot = sug_add
+            raw_totals["Açúcares totais (g)"] += sug_tot * factor
+            
+            raw_totals["Proteína (g)"] += get_num_val(ing["n"], "Proteína (g)", ing["d"]) * factor
+            raw_totals["Lipídios (g)"] += get_num_val(ing["n"], "Lipídios (g)", ing["d"]) * factor
+            raw_totals["Gorduras saturadas (g)"] += get_num_val(ing["n"], "Gorduras saturadas (g)", ing["d"]) * factor
+            raw_totals["Gorduras trans (g)"] += get_num_val(ing["n"], "Gorduras trans (g)", ing["d"]) * factor
+            raw_totals["Fibra alimentar (g)"] += get_num_val(ing["n"], "Fibra alimentar (g)", ing["d"]) * factor
+            raw_totals["Sódio (mg)"] += get_num_val(ing["n"], "Sódio (mg)", ing["d"]) * factor
             
         # 2. Calcular valores por 100g do produto pronto (Concentrado pelo peso final)
         totals_100g = {}
