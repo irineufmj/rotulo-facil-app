@@ -952,6 +952,20 @@ with tab_app:
             if st.session_state.nome_produto:
                 st.markdown(f"##### Produto: **{st.session_state.nome_produto}**")
             
+            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
+            # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
+            if alto_acucar or alto_gordura or alto_sodio:
+                lupa_content_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
+            else:
+                lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
+                
+            lupa_container_html = f"""
+            <div style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto;">
+                {lupa_content_html}
+            </div>
+            """
+            st.markdown(lupa_container_html, unsafe_allow_html=True)
+            
             # Calcular número de porções conforme regras da ANVISA
             # Se peso_embalagem foi informado, calcula com base nele; senão, usa o rendimento da receita
             ref_weight = peso_embalagem if peso_embalagem > 0.0 else weight_final
@@ -1056,21 +1070,7 @@ with tab_app:
             """
             st.markdown(table_html, unsafe_allow_html=True)
             
-            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
-            if alto_acucar or alto_gordura or alto_sodio:
-                lupa_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
-                
-                # 1. Exibir no painel de visualização (centro da coluna)
-                st.markdown(f'<div style="display: flex; justify-content: center; margin: 20px 0;">{lupa_html}</div>', unsafe_allow_html=True)
-                
-                # 2. Exibir no canto superior esquerdo da janela (badge flutuante)
-                floating_lupa_html = f"""
-                <div style="position: fixed; top: 75px; left: 15px; z-index: 99999; background: white; padding: 10px; border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,0.18); border: 2px solid black;">
-                    <div style="font-family: Arial, sans-serif; font-size: 8px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; color: #555; text-align: center; margin-bottom: 5px;">Rotulagem Frontal</div>
-                    {lupa_html}
-                </div>
-                """
-                st.markdown(floating_lupa_html, unsafe_allow_html=True)
+
                 
             # --- Lista de Ingredientes Decrescente ---
             # Ordenar ingredientes por peso decrescente

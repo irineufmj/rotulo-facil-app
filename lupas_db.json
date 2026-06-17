@@ -27,6 +27,20 @@
         "sodio": false,
         "descricao": "Alto em Açúcar Adicionado e Gordura Saturada"
     },
+    "acucar_sodio": {
+        "filename": "lupa_acucar_sodio.png",
+        "acucar": true,
+        "gordura": false,
+        "sodio": true,
+        "descricao": "Alto em Açúcar Adicionado e Sódio"
+    },
+    "gordura_sodio": {
+        "filename": "lupa_sodio_gordura.png",
+        "acucar": false,
+        "gordura": true,
+        "sodio": true,
+        "descricao": "Alto em Gordura Saturada e Sódio"
+    },
     "acucar_gordura_sodio": {
         "filename": "lupa_acucar_gordura_sodio.png",
         "acucar": true,
