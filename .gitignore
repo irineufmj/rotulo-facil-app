@@ -9,6 +9,7 @@ __pycache__/
 
 # Local databases and user data
 receitas_salvas.json
+usuarios.json
 custom_ingredients.csv
 
 # Large SQL dumps (not needed for online app execution)

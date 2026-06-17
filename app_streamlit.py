@@ -4,6 +4,8 @@ import os
 import pandas as pd
 import io
 import math
+import hashlib
+import uuid
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -163,6 +165,14 @@ def load_unified_data():
 foods_data = load_unified_data()
 
 # Inicializar estados de sessão
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "nome_produto" not in st.session_state:
+    st.session_state.nome_produto = ""
+if "peso_embalagem" not in st.session_state:
+    st.session_state.peso_embalagem = 0.0
 if "recipe" not in st.session_state:
     st.session_state.recipe = []
 if "weight_final" not in st.session_state:
@@ -247,6 +257,79 @@ def round_anvisa(value, nutrient_name):
     else:
         return f"{int(dec_round(value, 0))}"
 
+USERS_JSON_PATH = "usuarios.json"
+
+def load_users():
+    if not os.path.exists(USERS_JSON_PATH):
+        return []
+    try:
+        with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Erro ao carregar usuários: {e}")
+        return []
+
+def save_users(users):
+    try:
+        with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(users, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar usuários: {e}")
+        return False
+
+def hash_password(password, salt=None):
+    if not salt:
+        salt = uuid.uuid4().hex
+    hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+    return f"{salt}:{hashed}"
+
+def verify_password(stored_password, provided_password):
+    if ":" not in stored_password:
+        return False
+    salt, hashed = stored_password.split(':')
+    return hashed == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
+
+def register_user(username, password, lgpd_accepted):
+    if not lgpd_accepted:
+        return False, "Você precisa aceitar os termos da LGPD para se cadastrar."
+    
+    username_clean = username.strip()
+    if not username_clean:
+        return False, "O nome de usuário não pode ser vazio."
+    if len(password) < 4:
+        return False, "A senha deve conter pelo menos 4 caracteres."
+        
+    users = load_users()
+    for u in users:
+        if u["username"].lower() == username_clean.lower():
+            return False, "Este nome de usuário já está em uso."
+            
+    new_user = {
+        "username": username_clean,
+        "password_hash": hash_password(password),
+        "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "lgpd_version": "1.0"
+    }
+    users.append(new_user)
+    if save_users(users):
+        return True, "Usuário cadastrado com sucesso!"
+    return False, "Erro ao gravar cadastro no banco de dados."
+
+def authenticate_user(username, password):
+    username_clean = username.strip()
+    if not username_clean or not password:
+        return False, "Por favor, preencha todos os campos."
+        
+    users = load_users()
+    for u in users:
+        if u["username"].lower() == username_clean.lower():
+            if verify_password(u["password_hash"], password):
+                return True, u["username"]
+            else:
+                return False, "Senha incorreta."
+    return False, "Usuário não encontrado."
+
 RECIPES_JSON_PATH = "receitas_salvas.json"
 
 def load_saved_recipes():
@@ -261,8 +344,12 @@ def load_saved_recipes():
 
 def save_recipe(name):
     recipes = load_saved_recipes()
+    username = st.session_state.get("username", "")
     new_recipe = {
         "nome": name,
+        "username": username,
+        "nome_produto": st.session_state.get("nome_produto", ""),
+        "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
         "ingredients": st.session_state.recipe,
         "weight_final": st.session_state.weight_final,
         "portion_size": st.session_state.portion_size,
@@ -276,10 +363,11 @@ def save_recipe(name):
         "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
-    # Substituir se já existir com o mesmo nome
+    # Substituir se já existir com o mesmo nome e pertencer ao mesmo usuário
     existing_idx = -1
     for idx, r in enumerate(recipes):
-        if r["nome"].lower() == name.lower():
+        recipe_username = r.get("username", "")
+        if r["nome"].lower() == name.lower() and (recipe_username == "" or recipe_username.lower() == username.lower()):
             existing_idx = idx
             break
             
@@ -298,7 +386,9 @@ def save_recipe(name):
 
 def delete_recipe(name):
     recipes = load_saved_recipes()
-    recipes = [r for r in recipes if r["nome"].lower() != name.lower()]
+    username = st.session_state.get("username", "")
+    # Manter receitas que pertencem a outros usuários ou que têm nome diferente
+    recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
     try:
         with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
             json.dump(recipes, f, indent=4, ensure_ascii=False)
@@ -318,6 +408,93 @@ def save_recipe_dialog():
                 st.rerun()
         else:
             st.error("Por favor, digite um nome para a receita.")
+
+# --- LOGIN / CADASTRO FLOW ---
+if not st.session_state.logged_in:
+    # Cabeçalho da página de acesso
+    st.markdown('<h1 class="main-title" style="text-align: center;">📋 Rótulo Fácil - Login</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle" style="text-align: center;">Gerador de Rótulos ANVISA em conformidade com as normas e dados unificados TBCA + TACO.</p>', unsafe_allow_html=True)
+    
+    # Criar uma caixa centralizada com colunas
+    col_left, col_center, col_right = st.columns([1, 1.2, 1])
+    
+    with col_center:
+        auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta"], horizontal=True, label_visibility="collapsed")
+        
+        st.markdown("---")
+        
+        if auth_mode == "Entrar":
+            st.markdown("### 🔑 Entrar no Sistema")
+            login_user = st.text_input("Usuário:", placeholder="Digite seu nome de usuário", key="login_username_field")
+            login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
+            
+            if st.button("Acessar Painel", type="primary", use_container_width=True):
+                success, result = authenticate_user(login_user, login_pass)
+                if success:
+                    st.session_state.logged_in = True
+                    st.session_state.username = result
+                    st.toast(f"Bem-vindo de volta, {result}!")
+                    st.rerun()
+                else:
+                    st.error(result)
+                    
+        else: # Criar Nova Conta
+            st.markdown("### 📝 Criar Nova Conta")
+            new_user = st.text_input("Nome de Usuário:", placeholder="Escolha um nome de usuário", key="reg_username_field")
+            new_pass = st.text_input("Senha:", type="password", placeholder="Mínimo de 4 caracteres", key="reg_password_field")
+            new_pass_confirm = st.text_input("Confirme a Senha:", type="password", placeholder="Repita a senha anterior", key="reg_password_confirm_field")
+            
+            st.markdown("##### 🛡️ Termos de Uso e Política de Privacidade (LGPD)")
+            with st.expander("Clique para ler os Termos de Uso e Política de Privacidade completos"):
+                st.markdown("""
+                **TERMO DE CONSENTIMENTO E PRIVACIDADE (LGPD)**
+                
+                De acordo com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018), este termo informa como tratamos suas informações:
+                
+                1. **Quais dados coletamos:** Coletamos o nome de usuário fornecido por você para fins de identificação, e o hash criptografado da sua senha. Coletamos também as receitas, ingredientes e parametrizações que você salvar.
+                2. **Finalidade:** O tratamento desses dados tem como única e exclusiva finalidade permitir que você gerencie, edite, exclua e visualize suas próprias receitas de forma privada.
+                3. **Armazenamento e Compartilhamento:** Seus dados são salvos localmente no arquivo de dados do aplicativo. Não compartilhamos, vendemos ou divulgamos suas receitas ou credenciais para terceiros em hipótese alguma.
+                4. **Exclusão de Dados:** Você é proprietário dos seus dados. A exclusão de uma receita pode ser feita diretamente por você. Para exclusão total da conta e de todas as suas receitas, entre em contato com o administrador.
+                5. **Segurança:** As senhas são protegidas por criptografia de mão única (SHA-256) combinadas com um salt aleatório para evitar acessos não autorizados.
+                
+                Ao assinalar a caixa abaixo, você declara que compreende e aceita livremente os termos deste tratamento de dados.
+                """)
+            
+            lgpd_accept = st.checkbox("Li e concordo com os Termos de Uso e Política de Privacidade de acordo com a LGPD.", key="lgpd_checkbox")
+            
+            if st.button("Cadastrar e Acessar", type="primary", use_container_width=True):
+                if not new_user.strip() or not new_pass or not new_pass_confirm:
+                    st.error("Por favor, preencha todos os campos do cadastro.")
+                elif new_pass != new_pass_confirm:
+                    st.error("As senhas digitadas não coincidem.")
+                elif not lgpd_accept:
+                    st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
+                else:
+                    success, msg = register_user(new_user, new_pass, lgpd_accept)
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.username = new_user.strip()
+                        st.success(msg)
+                        st.toast(f"Conta criada! Bem-vindo, {new_user.strip()}!")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+    st.stop()
+
+# Sidebar do Usuário Conectado
+with st.sidebar:
+    st.markdown("### 👤 Usuário Conectado")
+    st.markdown(f"Conectado como: **{st.session_state.username}**")
+    if st.button("🚪 Sair da Conta", type="secondary", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.recipe = []
+        st.session_state.calculated = False
+        st.session_state.nome_produto = ""
+        st.session_state.peso_embalagem = 0.0
+        st.toast("Você saiu da conta.")
+        st.rerun()
+    st.markdown("---")
 
 # --- TABS PRINCIPAIS ---
 tab_app, tab_receitas, tab_cadastro = st.tabs([
@@ -448,6 +625,15 @@ with tab_app:
                 
                 # Parâmetros de Rendimento
                 st.markdown("##### ⚖️ Rendimento e Porcionamento (Obrigatório)")
+                
+                nome_produto = st.text_input(
+                    "Nome Comercial do Produto:",
+                    placeholder="Ex: Bolo de Cenoura Fit",
+                    value=st.session_state.nome_produto,
+                    key="nome_produto_widget",
+                    help="O nome de venda do produto que será impresso no relatório oficial."
+                )
+                
                 col_rend1, col_rend2, col_rend3 = st.columns(3)
                 
                 product_type_options = ["Sólido ou Semissólido", "Líquido"]
@@ -466,14 +652,24 @@ with tab_app:
                     st.session_state.weight_final = total_raw_weight
                 
                 weight_final = col_rend2.number_input(
-                    "Peso/Vol. Final do Pronto (g/ml):",
+                    "Rendimento da Receita (Peso Pronto) (g/ml):",
                     min_value=1.0,
                     value=float(st.session_state.weight_final),
                     key="weight_final_widget",
                     help="O peso/volume total após cozimento. Considera perda por evaporação ou ganho de água."
                 )
                 
-                portion_size = col_rend3.number_input(
+                peso_embalagem = col_rend3.number_input(
+                    "Peso Líquido na Embalagem (g/ml):",
+                    min_value=0.0,
+                    value=float(st.session_state.peso_embalagem),
+                    step=10.0,
+                    key="peso_embalagem_widget",
+                    help="O peso líquido total da embalagem comercial. Se deixado como 0, usará o Rendimento da Receita para calcular as porções."
+                )
+                
+                col_rend4, col_rend5 = st.columns(2)
+                portion_size = col_rend4.number_input(
                     "Tamanho da Porção (g/ml):",
                     min_value=1.0,
                     value=float(st.session_state.portion_size),
@@ -482,7 +678,7 @@ with tab_app:
                     help="O tamanho de porção definido para a rotulagem nutricional (ex: 60g para bolos, 20g para biscoitos)."
                 )
                 
-                case_measure = st.text_input(
+                case_measure = col_rend5.text_input(
                     "Medida Caseira da Porção:",
                     placeholder="Ex: 1 unidade, 2 fatias, 1 colher de sopa...",
                     value=st.session_state.case_measure,
@@ -512,7 +708,7 @@ with tab_app:
                 )
                 
                 allergens_list = [
-                    "Trigo", "Centeio", "Cevada", "Aveia", "Crustáceos", "Ovos", "Pe魚es", 
+                    "Trigo", "Centeio", "Cevada", "Aveia", "Crustáceos", "Ovos", "Peixes", 
                     "Amendoim", "Soja", "Leite", "Amêndoa", "Avelãs", "Castanha-de-caju", 
                     "Castanha-do-pará", "Macadâmias", "Nozes", "Pecãs", "Pistaches", "Pinoli"
                 ]
@@ -558,6 +754,8 @@ with tab_app:
                     st.session_state.allergens_deriv = selected_allergens_deriv
                     st.session_state.allergens_may_contain = selected_allergens_may_contain
                     st.session_state.product_type = product_type
+                    st.session_state.nome_produto = nome_produto
+                    st.session_state.peso_embalagem = peso_embalagem
                     
                     if len(processed_recipe) == 0:
                         st.session_state.calculated = False
@@ -582,6 +780,7 @@ with tab_app:
         allergens_deriv = st.session_state.allergens_deriv
         allergens_may_contain = st.session_state.allergens_may_contain
         product_type = st.session_state.get("product_type", "Sólido ou Semissólido")
+        peso_embalagem = st.session_state.get("peso_embalagem", 0.0)
 
         # 1. Somar nutrientes totais ponderados pelo peso dos ingredientes
         raw_totals = {
@@ -660,8 +859,14 @@ with tab_app:
         with col_label:
             st.markdown("### 📋 Pré-visualização do Rótulo")
             
+            # Exibir nome do produto no painel de pré-visualização
+            if st.session_state.nome_produto:
+                st.markdown(f"##### Produto: **{st.session_state.nome_produto}**")
+            
             # Calcular número de porções conforme regras da ANVISA
-            n_raw = weight_final / portion_size
+            # Se peso_embalagem foi informado, calcula com base nele; senão, usa o rendimento da receita
+            ref_weight = peso_embalagem if peso_embalagem > 0.0 else weight_final
+            n_raw = ref_weight / portion_size
             if n_raw < 1.5:
                 n_porcoes_str = "Cerca de 1"
             elif n_raw <= 10.0:
@@ -837,8 +1042,14 @@ with tab_app:
                 legal_style = ParagraphStyle('Legal', parent=styles['Normal'], fontName='Courier-Bold', fontSize=10, leading=13)
                 
                 story.append(Paragraph("<b>RELATÓRIO DE ROTULAGEM NUTRICIONAL OFICIAL</b>", title_style))
-                story.append(Paragraph(f"Gerado em conformidade com RDC 429/2020 e IN 75/2020", body_style))
-                story.append(Spacer(1, 15))
+                
+                prod_name = st.session_state.nome_produto if st.session_state.nome_produto else "Não Informado"
+                story.append(Paragraph(f"<b>Nome Comercial do Produto:</b> {prod_name}", ParagraphStyle('PName', parent=body_style, fontSize=10, leading=12)))
+                
+                ref_emb = f"{peso_embalagem:.1f} {col_unit}" if peso_embalagem > 0.0 else "Não Informado"
+                story.append(Paragraph(f"<b>Rendimento da Receita:</b> {weight_final:.1f} {col_unit} | <b>Peso Líquido na Embalagem:</b> {ref_emb}", ParagraphStyle('PDetails', parent=body_style, fontSize=9, leading=11)))
+                story.append(Paragraph(f"Gerado em conformidade com RDC 429/2020 e IN 75/2020", ParagraphStyle('PSub', parent=body_style, fontName='Helvetica-Oblique', fontSize=8, leading=10, textColor=colors.gray)))
+                story.append(Spacer(1, 10))
                 
                 # Dados da tabela
                 table_data = [
@@ -949,7 +1160,10 @@ with tab_receitas:
     st.markdown("### 📁 Minhas Receitas Salvas")
     st.markdown("Consulte, carregue ou remova receitas salvas localmente no banco de dados do aplicativo.")
     
-    saved_recipes = load_saved_recipes()
+    current_username = st.session_state.get("username", "")
+    all_recipes = load_saved_recipes()
+    # Filtrar para exibir apenas receitas públicas/legadas ou do usuário logado
+    saved_recipes = [r for r in all_recipes if r.get("username", "") == "" or r.get("username", "").lower() == current_username.lower()]
     
     if not saved_recipes:
         st.info("Nenhuma receita salva encontrada. Monte uma receita e clique em 'Salvar Receita' para salvá-la aqui.")
@@ -982,12 +1196,14 @@ with tab_receitas:
             p_col1, p_col2 = st.columns(2)
             with p_col1:
                 st.markdown(f"""
-                - **Peso Final do Produto Pronto:** {recipe['weight_final']:.1f} g
-                - **Tamanho da Porção:** {recipe['portion_size']:.1f} g
-                - **Medida Caseira:** {recipe['case_measure']}
+                - **Nome do Produto:** {recipe.get('nome_produto', 'Não Informado')}
+                - **Rendimento da Receita (Peso Pronto):** {recipe['weight_final']:.1f} g/ml
+                - **Peso Líquido na Embalagem:** {recipe.get('peso_embalagem', 0.0):.1f} g/ml
+                - **Tamanho da Porção:** {recipe['portion_size']:.1f} g/ml
                 """)
             with p_col2:
                 st.markdown(f"""
+                - **Medida Caseira:** {recipe['case_measure']}
                 - **Glúten:** {recipe['gluten_opt']}
                 - **Lactose:** {recipe['lactose_opt']}
                 - **Tipo:** {recipe.get('product_type', 'Sólido ou Semissólido')}
@@ -1011,6 +1227,8 @@ with tab_receitas:
                     st.session_state.allergens_deriv = recipe.get("allergens_deriv", [])
                     st.session_state.allergens_may_contain = recipe.get("allergens_may_contain", [])
                     st.session_state.product_type = recipe.get("product_type", "Sólido ou Semissólido")
+                    st.session_state.nome_produto = recipe.get("nome_produto", "")
+                    st.session_state.peso_embalagem = float(recipe.get("peso_embalagem", 0.0))
                     st.session_state.calculated = True
                     st.toast(f"Receita **{selected_name}** carregada com sucesso!")
                     st.rerun()
