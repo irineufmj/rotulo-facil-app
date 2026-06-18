@@ -6,11 +6,69 @@ import io
 import math
 import hashlib
 import uuid
+import re
+import html
+import threading
+import tempfile
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+
+# Configurações de logging e concorrência
+logger = logging.getLogger(__name__)
+db_lock = threading.RLock()
+
+# Definição absoluta de caminhos de arquivos de dados
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
+USERS_JSON_PATH = os.path.join(BASE_DIR, "usuarios.json")
+RECIPES_JSON_PATH = os.path.join(BASE_DIR, "receitas_salvas.json")
+
+def safe_save_json(filepath, data):
+    dir_name = os.path.dirname(filepath)
+    fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        os.replace(temp_path, filepath)
+        return True
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        logger.error(f"Erro ao salvar arquivo {os.path.basename(filepath)}: {e}", exc_info=True)
+        return False
+
+def get_default_admin_password():
+    admin_pass = os.environ.get("ADMIN_PASSWORD")
+    if not admin_pass:
+        try:
+            admin_pass = st.secrets.get("ADMIN_PASSWORD")
+        except Exception:
+            pass
+    if admin_pass:
+        return admin_pass
+        
+    admin_pwd_file = os.path.join(BASE_DIR, ".admin_password")
+    if os.path.exists(admin_pwd_file):
+        try:
+            with open(admin_pwd_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+            
+    import secrets
+    temp_pass = secrets.token_urlsafe(12)
+    try:
+        with open(admin_pwd_file, "w", encoding="utf-8") as f:
+            f.write(temp_pass)
+        print(f"⚠️ SENHA ADMIN TEMPORÁRIA GERADA: {temp_pass}")
+    except Exception:
+        pass
+    return temp_pass
+
 
 # Configuração da página Streamlit
 st.set_page_config(
@@ -108,8 +166,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-CUSTOM_CSV_PATH = "custom_ingredients.csv"
 
 # --- INICIALIZAÇÃO E LEITURA DE DADOS ---
 
@@ -363,12 +419,9 @@ def generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio):
     svg += '</svg>'
     return svg
 
-import base64
-
 def get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio):
-    db_path = "lupas_db.json"
-    if not os.path.exists(db_path):
-        db_path = os.path.join(os.path.dirname(__file__), "lupas_db.json")
+    import base64  # Será removido do meio do arquivo ou deixado se necessário. Mas wait, let's keep base64 import at top. Let's make sure it is at the top.
+    db_path = os.path.join(BASE_DIR, "lupas_db.json")
     
     if os.path.exists(db_path):
         try:
@@ -377,27 +430,24 @@ def get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio):
             for key, val in db.items():
                 if val.get("acucar") == alto_acucar and val.get("gordura") == alto_gordura and val.get("sodio") == alto_sodio:
                     filename = val.get("filename")
-                    img_path = os.path.join("lupas", filename)
-                    if not os.path.exists(img_path):
-                        img_path = os.path.join(os.path.dirname(__file__), "lupas", filename)
+                    img_path = os.path.join(BASE_DIR, "lupas", filename)
                     if os.path.exists(img_path):
                         return img_path
         except Exception as e:
-            pass
+            logger.warning(f"Erro ao carregar banco de dados de lupas: {e}", exc_info=True)
     return None
 
 def get_lupa_html(alto_acucar, alto_gordura, alto_sodio, width_px=180):
     img_path = get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio)
     if img_path:
         try:
+            import base64
             with open(img_path, "rb") as image_file:
                 encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
             return f'<img src="data:image/png;base64,{encoded_string}" width="{width_px}" style="display: block; margin: 0 auto;" />'
         except Exception as e:
-            pass
+            logger.warning(f"Erro ao codificar imagem da lupa em base64: {e}", exc_info=True)
     return generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio)
-
-USERS_JSON_PATH = "usuarios.json"
 
 def validate_cpf(cpf_str):
     if not cpf_str:
@@ -431,60 +481,69 @@ def validate_cpf(cpf_str):
     return True
 
 def load_users():
-    users = []
-    if os.path.exists(USERS_JSON_PATH):
-        try:
-            with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-                users = json.load(f)
-        except Exception as e:
-            st.error(f"Erro ao carregar usuários: {e}")
+    with db_lock:
+        users = []
+        if os.path.exists(USERS_JSON_PATH):
+            try:
+                with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+                    users = json.load(f)
+            except Exception as e:
+                logger.error(f"Erro ao carregar usuários: {e}", exc_info=True)
+                st.error(f"Erro ao carregar usuários: {e}")
+                
+        # Garantir que exista pelo menos um administrador
+        has_admin = any(u.get("is_admin", False) for u in users)
+        if not has_admin:
+            admin_pwd = get_default_admin_password()
+            default_admin = {
+                "username": "admin",
+                "email": "admin@rotulofacil.com",
+                "cpf": "00000000000",
+                "password_hash": hash_password(admin_pwd),
+                "is_admin": True,
+                "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "lgpd_version": "1.0"
+            }
+            # Adicionar o admin se não estiver na lista de usuários
+            admin_exists = any(u["username"].lower() == "admin" for u in users)
+            if not admin_exists:
+                users.append(default_admin)
+            else:
+                # Caso o usuário admin exista mas não seja admin, ativa a flag
+                for u in users:
+                    if u["username"].lower() == "admin":
+                        u["is_admin"] = True
+                        break
+            safe_save_json(USERS_JSON_PATH, users)
             
-    # Garantir que exista pelo menos um administrador
-    has_admin = any(u.get("is_admin", False) for u in users)
-    if not has_admin:
-        default_admin = {
-            "username": "admin",
-            "email": "admin@rotulofacil.com",
-            "cpf": "00000000000",
-            "password_hash": hash_password("admin123"),
-            "is_admin": True,
-            "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "lgpd_version": "1.0"
-        }
-        # Adicionar o admin se não estiver na lista de usuários
-        admin_exists = any(u["username"].lower() == "admin" for u in users)
-        if not admin_exists:
-            users.append(default_admin)
-        else:
-            # Caso o usuário admin exista mas não seja admin, ativa a flag
-            for u in users:
-                if u["username"].lower() == "admin":
-                    u["is_admin"] = True
-                    break
-        save_users(users)
-        
-    return users
+        return users
 
 def save_users(users):
-    try:
-        with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(users, f, indent=4, ensure_ascii=False)
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar usuários: {e}")
-        return False
+    with db_lock:
+        return safe_save_json(USERS_JSON_PATH, users)
 
 def hash_password(password, salt=None):
     if not salt:
-        salt = uuid.uuid4().hex
-    hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
-    return f"{salt}:{hashed}"
+        salt = os.urandom(32)
+    else:
+        salt = bytes.fromhex(salt) if isinstance(salt, str) else salt
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 600_000)
+    return f"{salt.hex()}:{key.hex()}"
 
 def verify_password(stored_password, provided_password):
     if ":" not in stored_password:
         return False
-    salt, hashed = stored_password.split(':')
-    return hashed == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
+    salt, stored_hash = stored_password.split(':')
+    # Compatibilidade retroativa com hashes antigos (SHA-256 simples)
+    if len(salt) == 32 and len(stored_hash) == 64:
+        return stored_hash == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
+    try:
+        salt_bytes = bytes.fromhex(salt)
+        key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt_bytes, 600_000)
+        return stored_hash == key.hex()
+    except Exception as e:
+        logger.warning(f"Erro ao verificar senha: {e}", exc_info=True)
+        return False
 
 def register_user(username, email, cpf, password, lgpd_accepted):
     if not lgpd_accepted:
@@ -496,12 +555,15 @@ def register_user(username, email, cpf, password, lgpd_accepted):
     
     if not username_clean:
         return False, "O nome de usuário não pode ser vazio."
-    if not email_clean or "@" not in email_clean or "." not in email_clean:
-        return False, "Por favor, informe um e-mail válido."
+        
+    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
+    if not EMAIL_RE.match(email_clean):
+        return False, "Por favor, informe um endereço de e-mail válido."
+        
     if not cpf_digits or not validate_cpf(cpf_digits):
         return False, "Por favor, informe um CPF válido."
-    if len(password) < 4:
-        return False, "A senha deve conter pelo menos 4 caracteres."
+    if len(password) < 8:
+        return False, "A senha deve conter pelo menos 8 caracteres."
         
     users = load_users()
     for u in users:
@@ -532,41 +594,50 @@ def authenticate_user(username, password):
     if not username_clean or not password:
         return False, "Por favor, preencha todos os campos.", False
         
+    if "login_attempts" not in st.session_state:
+        st.session_state.login_attempts = 0
+        
+    if st.session_state.login_attempts >= 5:
+        return False, "Acesso bloqueado temporariamente por excesso de tentativas falhas.", False
+        
     users = load_users()
     for u in users:
         if u["username"].lower() == username_clean.lower():
             if verify_password(u["password_hash"], password):
+                st.session_state.login_attempts = 0
                 return True, u["username"], u.get("is_admin", False)
             else:
-                return False, "Senha incorreta.", False
-    return False, "Usuário não encontrado.", False
+                st.session_state.login_attempts += 1
+                attempts_left = max(0, 5 - st.session_state.login_attempts)
+                return False, f"Senha incorreta. {attempts_left} tentativa(s) restante(s).", False
+                
+    st.session_state.login_attempts += 1
+    attempts_left = max(0, 5 - st.session_state.login_attempts)
+    return False, f"Usuário não encontrado. {attempts_left} tentativa(s) restante(s).", False
 
 def admin_delete_user(username_to_delete):
     username_clean = username_to_delete.strip().lower()
-    users = load_users()
-    
-    # Prevenir que o admin delete a si mesmo
-    if st.session_state.get("username", "").strip().lower() == username_clean:
-        return False, "Você não pode excluir a sua própria conta ativa de administrador."
+    with db_lock:
+        users = load_users()
         
-    # Manter todos exceto o usuário excluído
-    new_users = [u for u in users if u["username"].strip().lower() != username_clean]
-    
-    if len(new_users) == len(users):
-        return False, "Usuário não encontrado."
+        # Prevenir que o admin delete a si mesmo
+        if st.session_state.get("username", "").strip().lower() == username_clean:
+            return False, "Você não pode excluir a sua própria conta ativa de administrador."
+            
+        # Manter todos exceto o usuário excluído
+        new_users = [u for u in users if u["username"].strip().lower() != username_clean]
         
-    if save_users(new_users):
-        # Exclusão em cascata de receitas
-        recipes = load_saved_recipes()
-        new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
-        try:
-            with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
-                json.dump(new_recipes, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            st.error(f"Erro ao excluir receitas em cascata: {e}")
-        return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
-        
-    return False, "Erro ao atualizar banco de dados de usuários."
+        if len(new_users) == len(users):
+            return False, "Usuário não encontrado."
+            
+        if safe_save_json(USERS_JSON_PATH, new_users):
+            # Exclusão em cascata de receitas
+            recipes = load_saved_recipes()
+            new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
+            safe_save_json(RECIPES_JSON_PATH, new_recipes)
+            return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
+            
+        return False, "Erro ao atualizar banco de dados de usuários."
 
 def admin_update_user(old_username, new_username, new_email, new_cpf, new_password=None, is_admin_val=False):
     old_clean = old_username.strip().lower()
@@ -576,126 +647,118 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, new_passwo
     
     if not new_username_clean:
         return False, "O nome de usuário não pode ser vazio."
-    if not new_email_clean or "@" not in new_email_clean or "." not in new_email_clean:
-        return False, "Por favor, informe um e-mail válido."
+        
+    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
+    if not EMAIL_RE.match(new_email_clean):
+        return False, "Por favor, informe um endereço de e-mail válido."
+        
     # Permitir CPF especial para a conta padrão admin (00000000000), senão deve validar
     if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
         return False, "Por favor, informe um CPF válido."
         
-    users = load_users()
-    
-    # Validar duplicidades com outros usuários
-    for u in users:
-        u_name = u["username"].strip().lower()
-        if u_name == old_clean:
-            continue # Pular validação com a própria conta
-            
-        if u_name == new_username_clean.lower():
-            return False, "Este nome de usuário já está em uso por outra conta."
-        if u.get("email", "").strip().lower() == new_email_clean.lower():
-            return False, "Este endereço de e-mail já está cadastrado em outra conta."
-        db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
-        if db_cpf == new_cpf_digits:
-            return False, "Este CPF já está cadastrado em outra conta."
-            
-    # Atualizar dados do usuário
-    updated = False
-    for u in users:
-        if u["username"].strip().lower() == old_clean:
-            u["username"] = new_username_clean
-            u["email"] = new_email_clean
-            u["cpf"] = new_cpf_digits
-            u["is_admin"] = is_admin_val
-            if new_password and len(new_password) >= 4:
-                u["password_hash"] = hash_password(new_password)
-            updated = True
-            break
-            
-    if not updated:
-        return False, "Usuário de origem não encontrado."
+    with db_lock:
+        users = load_users()
         
-    if save_users(users):
-        # Atualizar a propriedade das receitas se o nome de usuário mudou
-        if old_clean != new_username_clean.lower():
-            recipes = load_saved_recipes()
-            for r in recipes:
-                if r.get("username", "").strip().lower() == old_clean:
-                    r["username"] = new_username_clean
-            try:
-                with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
-                    json.dump(recipes, f, indent=4, ensure_ascii=False)
-            except Exception as e:
-                st.error(f"Erro ao renomear proprietário das receitas: {e}")
-        return True, "Cadastro do usuário atualizado com sucesso!"
-        
-    return False, "Erro ao gravar alterações no banco de dados."
-
-RECIPES_JSON_PATH = "receitas_salvas.json"
+        # Validar duplicidades com outros usuários
+        for u in users:
+            u_name = u["username"].strip().lower()
+            if u_name == old_clean:
+                continue # Pular validação com a própria conta
+                
+            if u_name == new_username_clean.lower():
+                return False, "Este nome de usuário já está em uso por outra conta."
+            if u.get("email", "").strip().lower() == new_email_clean.lower():
+                return False, "Este endereço de e-mail já está cadastrado em outra conta."
+            db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
+            if db_cpf == new_cpf_digits:
+                return False, "Este CPF já está cadastrado em outra conta."
+                
+        # Atualizar dados do usuário
+        updated = False
+        for u in users:
+            if u["username"].strip().lower() == old_clean:
+                u["username"] = new_username_clean
+                u["email"] = new_email_clean
+                u["cpf"] = new_cpf_digits
+                u["is_admin"] = is_admin_val
+                if new_password:
+                    if len(new_password) < 8:
+                        return False, "A senha deve conter pelo menos 8 caracteres."
+                    u["password_hash"] = hash_password(new_password)
+                updated = True
+                break
+                
+        if not updated:
+            return False, "Usuário de origem não encontrado."
+            
+        if safe_save_json(USERS_JSON_PATH, users):
+            # Atualizar a propriedade das receitas se o nome de usuário mudou
+            if old_clean != new_username_clean.lower():
+                recipes = load_saved_recipes()
+                for r in recipes:
+                    if r.get("username", "").strip().lower() == old_clean:
+                        r["username"] = new_username_clean
+                safe_save_json(RECIPES_JSON_PATH, recipes)
+            return True, "Cadastro do usuário atualizado com sucesso!"
+            
+        return False, "Erro ao gravar alterações no banco de dados."
 
 def load_saved_recipes():
-    if not os.path.exists(RECIPES_JSON_PATH):
-        return []
-    try:
-        with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        st.error(f"Erro ao carregar receitas salvas: {e}")
-        return []
+    with db_lock:
+        if not os.path.exists(RECIPES_JSON_PATH):
+            return []
+        try:
+            with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Erro ao carregar receitas salvas: {e}", exc_info=True)
+            st.error(f"Erro ao carregar receitas salvas: {e}")
+            return []
 
 def save_recipe(name):
-    recipes = load_saved_recipes()
-    username = st.session_state.get("username", "")
-    new_recipe = {
-        "nome": name,
-        "username": username,
-        "nome_produto": st.session_state.get("nome_produto", ""),
-        "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
-        "ingredients": st.session_state.recipe,
-        "weight_final": st.session_state.weight_final,
-        "portion_size": st.session_state.portion_size,
-        "case_measure": st.session_state.case_measure,
-        "gluten_opt": st.session_state.gluten_opt,
-        "lactose_opt": st.session_state.lactose_opt,
-        "allergens_direct": st.session_state.allergens_direct,
-        "allergens_deriv": st.session_state.allergens_deriv,
-        "allergens_may_contain": st.session_state.allergens_may_contain,
-        "product_type": st.session_state.product_type,
-        "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    # Substituir se já existir com o mesmo nome e pertencer ao mesmo usuário
-    existing_idx = -1
-    for idx, r in enumerate(recipes):
-        recipe_username = r.get("username", "")
-        if r["nome"].lower() == name.lower() and (recipe_username == "" or recipe_username.lower() == username.lower()):
-            existing_idx = idx
-            break
-            
-    if existing_idx >= 0:
-        recipes[existing_idx] = new_recipe
-    else:
-        recipes.append(new_recipe)
+    with db_lock:
+        recipes = load_saved_recipes()
+        username = st.session_state.get("username", "")
+        new_recipe = {
+            "nome": name,
+            "username": username,
+            "nome_produto": st.session_state.get("nome_produto", ""),
+            "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
+            "ingredients": st.session_state.recipe,
+            "weight_final": st.session_state.weight_final,
+            "portion_size": st.session_state.portion_size,
+            "case_measure": st.session_state.case_measure,
+            "gluten_opt": st.session_state.gluten_opt,
+            "lactose_opt": st.session_state.lactose_opt,
+            "allergens_direct": st.session_state.allergens_direct,
+            "allergens_deriv": st.session_state.allergens_deriv,
+            "allergens_may_contain": st.session_state.allergens_may_contain,
+            "product_type": st.session_state.product_type,
+            "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
         
-    try:
-        with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(recipes, f, indent=4, ensure_ascii=False)
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar receita: {e}")
-        return False
+        # Substituir se já existir com o mesmo nome e pertencer ao mesmo usuário
+        existing_idx = -1
+        for idx, r in enumerate(recipes):
+            recipe_username = r.get("username", "")
+            if r["nome"].lower() == name.lower() and (recipe_username == "" or recipe_username.lower() == username.lower()):
+                existing_idx = idx
+                break
+                
+        if existing_idx >= 0:
+            recipes[existing_idx] = new_recipe
+        else:
+            recipes.append(new_recipe)
+            
+        return safe_save_json(RECIPES_JSON_PATH, recipes)
 
 def delete_recipe(name):
-    recipes = load_saved_recipes()
-    username = st.session_state.get("username", "")
-    # Manter receitas que pertencem a outros usuários ou que têm nome diferente
-    recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
-    try:
-        with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(recipes, f, indent=4, ensure_ascii=False)
-        return True
-    except Exception as e:
-        st.error(f"Erro ao deletar receita: {e}")
-        return False
+    with db_lock:
+        recipes = load_saved_recipes()
+        username = st.session_state.get("username", "")
+        # Manter receitas que pertencem a outros usuários ou que têm nome diferente
+        recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
+        return safe_save_json(RECIPES_JSON_PATH, recipes)
 
 @st.dialog("Salvar Receita")
 def save_recipe_dialog():
@@ -923,7 +986,10 @@ with tab_app:
                 new_recipe_list = []
                 for idx, ing in enumerate(st.session_state.recipe):
                     col_ing_name, col_ing_weight, col_ing_del = st.columns([2.5, 1.5, 0.5])
-                    col_ing_name.markdown(f"**{ing['d']}**<br><small style='color: gray;'>{ing['f']} | {ing['c']}</small>", unsafe_allow_html=True)
+                    safe_d = html.escape(ing['d'])
+                    safe_f = html.escape(ing['f'])
+                    safe_c = html.escape(ing['c'])
+                    col_ing_name.markdown(f"**{safe_d}**<br><small style='color: gray;'>{safe_f} | {safe_c}</small>", unsafe_allow_html=True)
                     
                     w_val = col_ing_weight.number_input(
                         "Peso (g)",
@@ -1088,7 +1154,7 @@ with tab_app:
     # --- PROCESSAMENTO DOS TOTAIS DA RECEITA ---
     if len(st.session_state.recipe) > 0 and st.session_state.calculated:
         # Carregar variáveis do estado da sessão para segurança e escopo limpo
-        weight_final = st.session_state.weight_final
+        weight_final = max(st.session_state.weight_final, 1.0)
         portion_size = st.session_state.portion_size
         case_measure = st.session_state.case_measure
         gluten_opt = st.session_state.gluten_opt
@@ -1181,8 +1247,10 @@ with tab_app:
             st.markdown("### 📋 Pré-visualização do Rótulo")
             
             # Exibir nome do produto no painel de pré-visualização
+            # Exibir nome do produto no painel de pré-visualização
             if st.session_state.nome_produto:
-                st.markdown(f"##### Produto: **{st.session_state.nome_produto}**")
+                safe_nome_produto = html.escape(st.session_state.nome_produto)
+                st.markdown(f"##### Produto: **{safe_nome_produto}**")
             
             # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
             # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
@@ -1214,6 +1282,7 @@ with tab_app:
                 n_porcoes_str = f"Cerca de {int(round(n_raw))}"
             
             # --- Renderização HTML da Tabela ANVISA ---
+            safe_case_measure = html.escape(case_measure)
             table_html = f"""
             <div class="anvisa-table-container">
                 <table class="anvisa-table">
@@ -1223,7 +1292,7 @@ with tab_app:
                     <tr>
                         <td colspan="4" style="border-bottom: 2px solid #000;">
                             {n_porcoes_str} porções por embalagem<br>
-                            Porção: {int(portion_size)} {col_unit} ({case_measure})
+                            Porção: {int(portion_size)} {col_unit} ({safe_case_measure})
                         </td>
                     </tr>
                     <tr style="font-weight: bold; text-align: center; background-color: #eee;">
@@ -1326,9 +1395,10 @@ with tab_app:
             
             st.markdown("##### 📝 Textos Legais (Cópia Rápida)")
             
+            safe_ing_text = html.escape(ing_text)
             legal_html = f"""
             <div class="legal-box">
-                <strong>INGREDIENTES:</strong> {ing_text}.<br><br>
+                <strong>INGREDIENTES:</strong> {safe_ing_text}.<br><br>
                 <strong>{gluten_opt}</strong><br>
                 <strong>{lactose_opt}</strong>
             """
@@ -1420,7 +1490,7 @@ with tab_app:
                             story.append(RLImage(img_path, width=pdf_width, height=pdf_height))
                             story.append(Spacer(1, 15))
                         except Exception as e:
-                            # Fallback em caso de erro ao ler/processar imagem
+                            logger.warning(f"Erro ao processar imagem da lupa para o PDF, usando fallback vetorizado: {e}", exc_info=True)
                             img_path = None
                     
                     if not img_path:
