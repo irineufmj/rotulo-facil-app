@@ -169,6 +169,8 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
     st.session_state.username = ""
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
 if "nome_produto" not in st.session_state:
     st.session_state.nome_produto = ""
 if "peso_embalagem" not in st.session_state:
@@ -397,15 +399,71 @@ def get_lupa_html(alto_acucar, alto_gordura, alto_sodio, width_px=180):
 
 USERS_JSON_PATH = "usuarios.json"
 
+def validate_cpf(cpf_str):
+    if not cpf_str:
+        return False
+    # Remover caracteres não numéricos
+    cpf = ''.join(filter(str.isdigit, cpf_str))
+    
+    if len(cpf) != 11:
+        return False
+        
+    # CPFs com dígitos todos iguais são inválidos
+    if cpf == cpf[0] * 11:
+        return False
+        
+    # Validação do primeiro dígito
+    soma = sum(int(cpf[i]) * (10 - i) for i in range(9))
+    resto = (soma * 10) % 11
+    if resto == 10:
+        resto = 0
+    if resto != int(cpf[9]):
+        return False
+        
+    # Validação do segundo dígito
+    soma = sum(int(cpf[i]) * (11 - i) for i in range(10))
+    resto = (soma * 10) % 11
+    if resto == 10:
+        resto = 0
+    if resto != int(cpf[10]):
+        return False
+        
+    return True
+
 def load_users():
-    if not os.path.exists(USERS_JSON_PATH):
-        return []
-    try:
-        with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        st.error(f"Erro ao carregar usuários: {e}")
-        return []
+    users = []
+    if os.path.exists(USERS_JSON_PATH):
+        try:
+            with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+                users = json.load(f)
+        except Exception as e:
+            st.error(f"Erro ao carregar usuários: {e}")
+            
+    # Garantir que exista pelo menos um administrador
+    has_admin = any(u.get("is_admin", False) for u in users)
+    if not has_admin:
+        default_admin = {
+            "username": "admin",
+            "email": "admin@rotulofacil.com",
+            "cpf": "00000000000",
+            "password_hash": hash_password("admin123"),
+            "is_admin": True,
+            "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "lgpd_version": "1.0"
+        }
+        # Adicionar o admin se não estiver na lista de usuários
+        admin_exists = any(u["username"].lower() == "admin" for u in users)
+        if not admin_exists:
+            users.append(default_admin)
+        else:
+            # Caso o usuário admin exista mas não seja admin, ativa a flag
+            for u in users:
+                if u["username"].lower() == "admin":
+                    u["is_admin"] = True
+                    break
+        save_users(users)
+        
+    return users
 
 def save_users(users):
     try:
@@ -428,13 +486,20 @@ def verify_password(stored_password, provided_password):
     salt, hashed = stored_password.split(':')
     return hashed == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
 
-def register_user(username, password, lgpd_accepted):
+def register_user(username, email, cpf, password, lgpd_accepted):
     if not lgpd_accepted:
         return False, "Você precisa aceitar os termos da LGPD para se cadastrar."
     
     username_clean = username.strip()
+    email_clean = email.strip()
+    cpf_digits = ''.join(filter(str.isdigit, cpf))
+    
     if not username_clean:
         return False, "O nome de usuário não pode ser vazio."
+    if not email_clean or "@" not in email_clean or "." not in email_clean:
+        return False, "Por favor, informe um e-mail válido."
+    if not cpf_digits or not validate_cpf(cpf_digits):
+        return False, "Por favor, informe um CPF válido."
     if len(password) < 4:
         return False, "A senha deve conter pelo menos 4 caracteres."
         
@@ -442,10 +507,18 @@ def register_user(username, password, lgpd_accepted):
     for u in users:
         if u["username"].lower() == username_clean.lower():
             return False, "Este nome de usuário já está em uso."
+        if u.get("email", "").lower() == email_clean.lower():
+            return False, "Este endereço de e-mail já está cadastrado."
+        db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
+        if db_cpf == cpf_digits:
+            return False, "Este CPF já está cadastrado em outra conta."
             
     new_user = {
         "username": username_clean,
+        "email": email_clean,
+        "cpf": cpf_digits,
         "password_hash": hash_password(password),
+        "is_admin": False,
         "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         "lgpd_version": "1.0"
     }
@@ -457,16 +530,105 @@ def register_user(username, password, lgpd_accepted):
 def authenticate_user(username, password):
     username_clean = username.strip()
     if not username_clean or not password:
-        return False, "Por favor, preencha todos os campos."
+        return False, "Por favor, preencha todos os campos.", False
         
     users = load_users()
     for u in users:
         if u["username"].lower() == username_clean.lower():
             if verify_password(u["password_hash"], password):
-                return True, u["username"]
+                return True, u["username"], u.get("is_admin", False)
             else:
-                return False, "Senha incorreta."
-    return False, "Usuário não encontrado."
+                return False, "Senha incorreta.", False
+    return False, "Usuário não encontrado.", False
+
+def admin_delete_user(username_to_delete):
+    username_clean = username_to_delete.strip().lower()
+    users = load_users()
+    
+    # Prevenir que o admin delete a si mesmo
+    if st.session_state.get("username", "").strip().lower() == username_clean:
+        return False, "Você não pode excluir a sua própria conta ativa de administrador."
+        
+    # Manter todos exceto o usuário excluído
+    new_users = [u for u in users if u["username"].strip().lower() != username_clean]
+    
+    if len(new_users) == len(users):
+        return False, "Usuário não encontrado."
+        
+    if save_users(new_users):
+        # Exclusão em cascata de receitas
+        recipes = load_saved_recipes()
+        new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
+        try:
+            with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(new_recipes, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            st.error(f"Erro ao excluir receitas em cascata: {e}")
+        return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
+        
+    return False, "Erro ao atualizar banco de dados de usuários."
+
+def admin_update_user(old_username, new_username, new_email, new_cpf, new_password=None, is_admin_val=False):
+    old_clean = old_username.strip().lower()
+    new_username_clean = new_username.strip()
+    new_email_clean = new_email.strip()
+    new_cpf_digits = ''.join(filter(str.isdigit, new_cpf))
+    
+    if not new_username_clean:
+        return False, "O nome de usuário não pode ser vazio."
+    if not new_email_clean or "@" not in new_email_clean or "." not in new_email_clean:
+        return False, "Por favor, informe um e-mail válido."
+    # Permitir CPF especial para a conta padrão admin (00000000000), senão deve validar
+    if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
+        return False, "Por favor, informe um CPF válido."
+        
+    users = load_users()
+    
+    # Validar duplicidades com outros usuários
+    for u in users:
+        u_name = u["username"].strip().lower()
+        if u_name == old_clean:
+            continue # Pular validação com a própria conta
+            
+        if u_name == new_username_clean.lower():
+            return False, "Este nome de usuário já está em uso por outra conta."
+        if u.get("email", "").strip().lower() == new_email_clean.lower():
+            return False, "Este endereço de e-mail já está cadastrado em outra conta."
+        db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
+        if db_cpf == new_cpf_digits:
+            return False, "Este CPF já está cadastrado em outra conta."
+            
+    # Atualizar dados do usuário
+    updated = False
+    for u in users:
+        if u["username"].strip().lower() == old_clean:
+            u["username"] = new_username_clean
+            u["email"] = new_email_clean
+            u["cpf"] = new_cpf_digits
+            u["is_admin"] = is_admin_val
+            if new_password and len(new_password) >= 4:
+                u["password_hash"] = hash_password(new_password)
+            updated = True
+            break
+            
+    if not updated:
+        return False, "Usuário de origem não encontrado."
+        
+    if save_users(users):
+        # Atualizar a propriedade das receitas se o nome de usuário mudou
+        if old_clean != new_username_clean.lower():
+            recipes = load_saved_recipes()
+            for r in recipes:
+                if r.get("username", "").strip().lower() == old_clean:
+                    r["username"] = new_username_clean
+            try:
+                with open(RECIPES_JSON_PATH, "w", encoding="utf-8") as f:
+                    json.dump(recipes, f, indent=4, ensure_ascii=False)
+            except Exception as e:
+                st.error(f"Erro ao renomear proprietário das receitas: {e}")
+        return True, "Cadastro do usuário atualizado com sucesso!"
+        
+    return False, "Erro ao gravar alterações no banco de dados."
 
 RECIPES_JSON_PATH = "receitas_salvas.json"
 
@@ -567,10 +729,11 @@ if not st.session_state.logged_in:
             login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
             
             if st.button("Acessar Painel", type="primary", use_container_width=True):
-                success, result = authenticate_user(login_user, login_pass)
+                success, result, is_admin = authenticate_user(login_user, login_pass)
                 if success:
                     st.session_state.logged_in = True
                     st.session_state.username = result
+                    st.session_state.is_admin = is_admin
                     st.toast(f"Bem-vindo de volta, {result}!")
                     st.rerun()
                 else:
@@ -579,6 +742,8 @@ if not st.session_state.logged_in:
         else: # Criar Nova Conta
             st.markdown("### 📝 Criar Nova Conta")
             new_user = st.text_input("Nome de Usuário:", placeholder="Escolha um nome de usuário", key="reg_username_field")
+            new_email = st.text_input("E-mail:", placeholder="Ex: usuario@email.com", key="reg_email_field")
+            new_cpf = st.text_input("CPF:", placeholder="Ex: 000.000.000-00", key="reg_cpf_field")
             new_pass = st.text_input("Senha:", type="password", placeholder="Mínimo de 4 caracteres", key="reg_password_field")
             new_pass_confirm = st.text_input("Confirme a Senha:", type="password", placeholder="Repita a senha anterior", key="reg_password_confirm_field")
             
@@ -589,8 +754,8 @@ if not st.session_state.logged_in:
                 
                 De acordo com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018), este termo informa como tratamos suas informações:
                 
-                1. **Quais dados coletamos:** Coletamos o nome de usuário fornecido por você para fins de identificação, e o hash criptografado da sua senha. Coletamos também as receitas, ingredientes e parametrizações que você salvar.
-                2. **Finalidade:** O tratamento desses dados tem como única e exclusiva finalidade permitir que você gerencie, edite, exclua e visualize suas próprias receitas de forma privada.
+                1. **Quais dados coletamos:** Coletamos seu nome de usuário, e-mail e CPF para fins de identificação, controle de unicidade, conformidade legal e segurança, além do hash criptografado da sua senha. Coletamos também as receitas, ingredientes e parametrizações que você salvar.
+                2. **Finalidade:** O tratamento desses dados tem como única e exclusiva finalidade permitir que você gerencie, edite, exclua e visualize suas próprias receitas de forma privada, evitando contas duplicadas ou fantasmas.
                 3. **Armazenamento e Compartilhamento:** Seus dados são salvos localmente no arquivo de dados do aplicativo. Não compartilhamos, vendemos ou divulgamos suas receitas ou credenciais para terceiros em hipótese alguma.
                 4. **Exclusão de Dados:** Você é proprietário dos seus dados. A exclusão de uma receita pode ser feita diretamente por você. Para exclusão total da conta e de todas as suas receitas, entre em contato com o administrador.
                 5. **Segurança:** As senhas são protegidas por criptografia de mão única (SHA-256) combinadas com um salt aleatório para evitar acessos não autorizados.
@@ -601,17 +766,18 @@ if not st.session_state.logged_in:
             lgpd_accept = st.checkbox("Li e concordo com os Termos de Uso e Política de Privacidade de acordo com a LGPD.", key="lgpd_checkbox")
             
             if st.button("Cadastrar e Acessar", type="primary", use_container_width=True):
-                if not new_user.strip() or not new_pass or not new_pass_confirm:
+                if not new_user.strip() or not new_email.strip() or not new_cpf.strip() or not new_pass or not new_pass_confirm:
                     st.error("Por favor, preencha todos os campos do cadastro.")
                 elif new_pass != new_pass_confirm:
                     st.error("As senhas digitadas não coincidem.")
                 elif not lgpd_accept:
                     st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
                 else:
-                    success, msg = register_user(new_user, new_pass, lgpd_accept)
+                    success, msg = register_user(new_user, new_email, new_cpf, new_pass, lgpd_accept)
                     if success:
                         st.session_state.logged_in = True
                         st.session_state.username = new_user.strip()
+                        st.session_state.is_admin = False
                         st.success(msg)
                         st.toast(f"Conta criada! Bem-vindo, {new_user.strip()}!")
                         st.rerun()
@@ -623,9 +789,12 @@ if not st.session_state.logged_in:
 with st.sidebar:
     st.markdown("### 👤 Usuário Conectado")
     st.markdown(f"Conectado como: **{st.session_state.username}**")
+    if st.session_state.get("is_admin", False):
+        st.markdown("🛡️ **Acesso Administrador**")
     if st.button("🚪 Sair da Conta", type="secondary", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
+        st.session_state.is_admin = False
         st.session_state.recipe = []
         st.session_state.calculated = False
         st.session_state.nome_produto = ""
@@ -635,11 +804,21 @@ with st.sidebar:
     st.markdown("---")
 
 # --- TABS PRINCIPAIS ---
-tab_app, tab_receitas, tab_cadastro = st.tabs([
+tab_titles = [
     "📋 Calculadora & Rótulo ANVISA", 
     "📁 Minhas Receitas Salvas", 
     "➕ Cadastrar Novo Ingrediente"
-])
+]
+is_admin = st.session_state.get("is_admin", False)
+if is_admin:
+    tab_titles.append("🔑 Painel Administrador")
+    
+tabs = st.tabs(tab_titles)
+tab_app = tabs[0]
+tab_receitas = tabs[1]
+tab_cadastro = tabs[2]
+if is_admin:
+    tab_admin = tabs[3]
 
 # ==============================================================================
 # TAB 1: CALCULADORA E RÓTULO
@@ -1525,3 +1704,114 @@ with tab_cadastro:
                 # Forçar a recarga dos dados na sessão
                 st.cache_data.clear()
                 st.rerun()
+
+# ==============================================================================
+# TAB 4: PAINEL ADMINISTRADOR
+# ==============================================================================
+if is_admin:
+    with tab_admin:
+        st.markdown("### 🔑 Painel do Administrador")
+        st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
+        
+        users = load_users()
+        
+        # Formatar CPF para exibição
+        def format_cpf(c):
+            c_digits = ''.join(filter(str.isdigit, c))
+            if len(c_digits) == 11:
+                return f"{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}"
+            return c
+            
+        users_display = []
+        for u in users:
+            users_display.append({
+                "Usuário": u["username"],
+                "E-mail": u.get("email", "N/A"),
+                "CPF": format_cpf(u.get("cpf", "N/A")),
+                "Administrador": "Sim" if u.get("is_admin", False) else "Não",
+                "Aceite LGPD": u.get("lgpd_accepted_at", "N/A")
+            })
+            
+        st.markdown("#### 👥 Usuários Cadastrados")
+        st.dataframe(pd.DataFrame(users_display), use_container_width=True)
+        
+        admin_action = st.radio("Selecione uma ação administrativa:", ["Editar Usuário", "Criar Usuário", "Excluir Usuário"], horizontal=True)
+        
+        if admin_action == "Editar Usuário":
+            st.markdown("##### ✏️ Editar Cadastro de Usuário")
+            usernames = [u["username"] for u in users]
+            selected_username = st.selectbox("Selecione o usuário para editar:", usernames)
+            
+            if selected_username:
+                # Carregar dados atuais do usuário selecionado
+                user_data = next((u for u in users if u["username"] == selected_username), None)
+                if user_data:
+                    with st.form("form_edit_user"):
+                        edit_name = st.text_input("Nome de Usuário:", value=user_data["username"])
+                        edit_email = st.text_input("E-mail:", value=user_data.get("email", ""))
+                        edit_cpf = st.text_input("CPF:", value=format_cpf(user_data.get("cpf", "")))
+                        edit_pass = st.text_input("Nova Senha (deixe em branco para manter a atual):", type="password")
+                        edit_is_admin = st.checkbox("Privilégios de Administrador", value=user_data.get("is_admin", False))
+                        
+                        submit_edit = st.form_submit_button("Confirmar Alterações", type="primary")
+                        if submit_edit:
+                            success, msg = admin_update_user(
+                                selected_username, 
+                                edit_name, 
+                                edit_email, 
+                                edit_cpf, 
+                                edit_pass if edit_pass.strip() else None, 
+                                edit_is_admin
+                            )
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                                
+        elif admin_action == "Criar Usuário":
+            st.markdown("##### 📝 Cadastrar Novo Usuário (Comum ou Admin)")
+            with st.form("form_create_user_admin"):
+                create_name = st.text_input("Nome de Usuário:", placeholder="Ex: joao_silva")
+                create_email = st.text_input("E-mail:", placeholder="Ex: joao@provedor.com")
+                create_cpf = st.text_input("CPF:", placeholder="Ex: 123.456.789-00")
+                create_pass = st.text_input("Senha:", type="password", placeholder="Mínimo 4 caracteres")
+                create_is_admin = st.checkbox("Privilégios de Administrador")
+                
+                submit_create = st.form_submit_button("Cadastrar Usuário", type="primary")
+                if submit_create:
+                    # Chamar register_user que já faz todas as validações (passando True para LGPD pois é feito pelo admin)
+                    success, msg = register_user(create_name, create_email, create_cpf, create_pass, lgpd_accepted=True)
+                    if success:
+                        # Se admin flag foi marcada, atualizamos o usuário criado
+                        if create_is_admin:
+                            admin_update_user(create_name, create_name, create_email, create_cpf, None, is_admin_val=True)
+                        st.success(f"Usuário '{create_name}' cadastrado com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                        
+        elif admin_action == "Excluir Usuário":
+            st.markdown("##### 🗑️ Excluir Usuário e Receitas Associadas (Cascata)")
+            current_user = st.session_state.get("username", "")
+            # Não permitir deletar a si mesmo na lista
+            other_usernames = [u["username"] for u in users if u["username"].lower() != current_user.lower()]
+            
+            if not other_usernames:
+                st.info("Não há outros usuários disponíveis para exclusão.")
+            else:
+                selected_del_username = st.selectbox("Selecione o usuário para exclusão:", other_usernames)
+                
+                st.warning("⚠️ **ATENÇÃO:** A exclusão removerá permanentemente a conta do usuário e todas as receitas salvas por ele em cascata.")
+                confirm_del_text = st.text_input(f"Digite o nome do usuário '{selected_del_username}' para confirmar:")
+                
+                if st.button("Excluir Usuário Definitivamente", type="secondary", use_container_width=True):
+                    if confirm_del_text.strip() == selected_del_username:
+                        success, msg = admin_delete_user(selected_del_username)
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("Confirmação inválida. Digite o nome do usuário exatamente para confirmar a exclusão.")
