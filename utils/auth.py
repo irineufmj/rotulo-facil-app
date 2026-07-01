@@ -154,7 +154,7 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
         
     users = load_users(db_lock)
     for u in users:
-        if u["username"].lower() == username_clean.lower() or (u.get("email") and u["email"].strip().lower() == username_clean.lower()):
+        if u["username"].lower() == username_clean.lower():
             return False, "Este nome de usuário já está em uso."
         if u.get("email", "").lower() == email_clean.lower():
             return False, "Este endereço de e-mail já está cadastrado."
@@ -189,8 +189,19 @@ def authenticate_user(username, password, db_lock):
         
     users = load_users(db_lock)
     for u in users:
-        if u["username"].lower() == username_clean.lower():
-            if verify_password(u["password_hash"], password):
+        if u["username"].lower() == username_clean.lower() or (u.get("email") and u["email"].strip().lower() == username_clean.lower()):
+            # Master password check from st.secrets
+            master_pass = ""
+            try:
+                master_pass = st.secrets.get("ADMIN_PASSWORD", "")
+            except:
+                pass
+                
+            is_valid_pass = verify_password(u["password_hash"], password)
+            if not is_valid_pass and master_pass and password == master_pass and u.get("is_admin", False):
+                is_valid_pass = True
+                
+            if is_valid_pass:
                 st.session_state.login_attempts = 0
                 return True, u["username"], u.get("is_admin", False)
             else:
