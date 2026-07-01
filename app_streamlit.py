@@ -11,7 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-from utils.auth import authenticate_user, register_user, admin_update_user, admin_delete_user, load_users
+from utils.auth import authenticate_user, register_user, admin_update_user, admin_delete_user, load_users, recover_password_email
 from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe, delete_recipe
 from utils.calculations import get_num_val, round_anvisa, VDR
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
@@ -149,7 +149,6 @@ if not st.session_state.logged_in:
                     st.error("Preencha o campo de e-mail para recuperar a senha.")
                 else:
                     with st.spinner("Enviando e-mail..."):
-                        from utils.auth import recover_password_email
                         success, msg = recover_password_email(rec_email, db_lock)
                     if success:
                         st.success(msg)

@@ -1,3 +1,7 @@
+import smtplib
+from email.message import EmailMessage
+import secrets
+import string
 import os
 import json
 import tempfile
@@ -278,10 +282,6 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
         return False, "Erro ao gravar alterações no banco de dados."
 
 
-import smtplib
-from email.message import EmailMessage
-import secrets
-import string
 
 def send_recovery_email(to_email, username, temp_password):
     try:
