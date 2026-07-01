@@ -154,7 +154,7 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
         
     users = load_users(db_lock)
     for u in users:
-        if u["username"].lower() == username_clean.lower():
+        if u["username"].lower() == username_clean.lower() or (u.get("email") and u["email"].strip().lower() == username_clean.lower()):
             return False, "Este nome de usuário já está em uso."
         if u.get("email", "").lower() == email_clean.lower():
             return False, "Este endereço de e-mail já está cadastrado."
