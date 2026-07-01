@@ -141,21 +141,16 @@ if not st.session_state.logged_in:
                     
         elif auth_mode == "Esqueci minha senha":
             st.markdown("### 🔓 Recuperação de Senha")
-            st.info("Para redefinir sua senha, você deve fornecer com exatidão o Nome de Usuário, E-mail e CPF cadastrados.")
-            rec_user = st.text_input("Nome de Usuário:", key="rec_username")
+            st.info("Para redefinir sua senha, informe o e-mail cadastrado na sua conta. Você receberá uma senha temporária.")
             rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
-            rec_cpf = st.text_input("CPF cadastrado:", key="rec_cpf")
-            rec_new_pass = st.text_input("Nova Senha:", type="password", key="rec_new_pass")
-            rec_new_pass_confirm = st.text_input("Confirme a Nova Senha:", type="password", key="rec_new_pass_confirm")
             
-            if st.button("Redefinir Senha", type="primary", use_container_width=True):
-                if not rec_user or not rec_email or not rec_cpf or not rec_new_pass or not rec_new_pass_confirm:
-                    st.error("Preencha todos os campos para recuperar a senha.")
-                elif rec_new_pass != rec_new_pass_confirm:
-                    st.error("As senhas não coincidem.")
+            if st.button("Enviar E-mail de Recuperação", type="primary", use_container_width=True):
+                if not rec_email:
+                    st.error("Preencha o campo de e-mail para recuperar a senha.")
                 else:
-                    from utils.auth import recover_password
-                    success, msg = recover_password(rec_user, rec_email, rec_cpf, rec_new_pass, db_lock)
+                    with st.spinner("Enviando e-mail..."):
+                        from utils.auth import recover_password_email
+                        success, msg = recover_password_email(rec_email, db_lock)
                     if success:
                         st.success(msg)
                     else:

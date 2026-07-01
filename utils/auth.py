@@ -277,23 +277,65 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
             
         return False, "Erro ao gravar alterações no banco de dados."
 
-def recover_password(username, email, cpf, new_password, db_lock):
-    username_clean = username.strip().lower()
-    email_clean = email.strip().lower()
-    cpf_digits = ''.join(filter(str.isdigit, cpf))
-    
-    if len(new_password) < 8:
-        return False, 'A nova senha deve conter pelo menos 8 caracteres.'
+
+import smtplib
+from email.message import EmailMessage
+import secrets
+import string
+
+def send_recovery_email(to_email, username, temp_password):
+    try:
+        smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
+        smtp_user = st.secrets.get("SMTP_USER", "")
+        smtp_pass = st.secrets.get("SMTP_PASSWORD", "")
         
+        if not smtp_user or not smtp_pass:
+            return False, "O administrador não configurou o servidor de e-mail (SMTP) no Streamlit Secrets."
+            
+        msg = EmailMessage()
+        msg.set_content(f"""
+Olá {username},
+
+Você solicitou a recuperação da sua senha no Rótulo Fácil.
+Sua nova senha temporária é: {temp_password}
+
+Recomendamos que você faça login com essa senha e, em seguida, acesse a aba "Meu Perfil" para alterá-la para uma senha de sua preferência.
+
+Atenciosamente,
+Equipe Rótulo Fácil
+""")
+        msg["Subject"] = "Recuperação de Senha - Rótulo Fácil"
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        server.quit()
+        return True, "E-mail enviado com sucesso!"
+    except Exception as e:
+        logger.error(f"Erro ao enviar e-mail: {e}", exc_info=True)
+        return False, f"Falha ao enviar o e-mail: {e}"
+
+def recover_password_email(email, db_lock):
+    email_clean = email.strip().lower()
+    
     with db_lock:
         users = load_users(db_lock)
         for u in users:
-            if u['username'].strip().lower() == username_clean:
-                if u.get('email', '').strip().lower() == email_clean and ''.join(filter(str.isdigit, u.get('cpf', ''))) == cpf_digits:
-                    u['password_hash'] = hash_password(new_password)
-                    if save_users(users, db_lock):
-                        return True, 'Senha redefinida com sucesso! Você já pode fazer login.'
-                    return False, 'Erro ao salvar nova senha no banco de dados.'
+            if u.get('email', '').strip().lower() == email_clean:
+                # Generate temp password
+                alphabet = string.ascii_letters + string.digits
+                temp_password = ''.join(secrets.choice(alphabet) for i in range(10))
+                
+                success, msg = send_recovery_email(email_clean, u.get('username', 'Usuário'), temp_password)
+                if success:
+                    u['password_hash'] = hash_password(temp_password)
+                    save_users(users, db_lock)
+                    return True, "Uma nova senha temporária foi enviada para o seu e-mail."
                 else:
-                    return False, 'Os dados fornecidos (E-mail ou CPF) não correspondem à conta.'
-        return False, 'Usuário não encontrado.'
+                    return False, msg
+                    
+        return False, "Nenhuma conta encontrada com este e-mail."
