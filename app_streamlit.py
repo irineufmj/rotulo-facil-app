@@ -4,21 +4,24 @@ import os
 import pandas as pd
 import io
 import math
-import hashlib
-import uuid
-import re
 import html
 import threading
-import tempfile
-import logging
-from decimal import Decimal, ROUND_HALF_UP
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
+from utils.auth import authenticate_user, register_user, admin_update_user, admin_delete_user, load_users
+from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe, delete_recipe
+from utils.calculations import get_num_val, round_anvisa, VDR
+from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
+
+db_lock = threading.RLock()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
+
+
 # Configurações de logging e concorrência
-logger = logging.getLogger(__name__)
 db_lock = threading.RLock()
 
 # Definição absoluta de caminhos de arquivos de dados
@@ -26,49 +29,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "usuarios.json")
 RECIPES_JSON_PATH = os.path.join(BASE_DIR, "receitas_salvas.json")
-
-def safe_save_json(filepath, data):
-    dir_name = os.path.dirname(filepath)
-    fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-        os.replace(temp_path, filepath)
-        return True
-    except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        logger.error(f"Erro ao salvar arquivo {os.path.basename(filepath)}: {e}", exc_info=True)
-        return False
-
-def get_default_admin_password():
-    admin_pass = os.environ.get("ADMIN_PASSWORD")
-    if not admin_pass:
-        try:
-            admin_pass = st.secrets.get("ADMIN_PASSWORD")
-        except Exception:
-            pass
-    if admin_pass:
-        return admin_pass
-        
-    admin_pwd_file = os.path.join(BASE_DIR, ".admin_password")
-    if os.path.exists(admin_pwd_file):
-        try:
-            with open(admin_pwd_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            pass
-            
-    import secrets
-    temp_pass = secrets.token_urlsafe(12)
-    try:
-        with open(admin_pwd_file, "w", encoding="utf-8") as f:
-            f.write(temp_pass)
-        print(f"⚠️ SENHA ADMIN TEMPORÁRIA GERADA: {temp_pass}")
-    except Exception:
-        pass
-    return temp_pass
-
 
 # Configuração da página Streamlit
 st.set_page_config(
@@ -79,93 +39,7 @@ st.set_page_config(
 )
 
 # Estilos CSS premium para a interface Streamlit
-st.markdown("""
-<style>
-    .main-title {
-        font-family: 'Outfit', sans-serif;
-        font-size: 2.2rem;
-        font-weight: 800;
-        background: linear-gradient(to right, #059669, #2563eb);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.2rem;
-    }
-    .subtitle {
-        font-size: 0.95rem;
-        color: #6b7280;
-        margin-bottom: 1.5rem;
-    }
-    .anvisa-table-container {
-        background-color: #ffffff;
-        padding: 1.5rem;
-        border-radius: 12px;
-        border: 2px solid #111111;
-        max-width: 420px;
-        margin: 0 auto;
-    }
-    .anvisa-table {
-        width: 100%;
-        border-collapse: collapse;
-        color: #000000 !important;
-        font-family: 'Arial', sans-serif;
-        font-size: 11px;
-    }
-    .anvisa-table th, .anvisa-table td {
-        border: 1px solid #000000;
-        padding: 4px 6px;
-        text-align: left;
-        color: #000000 !important;
-    }
-    .anvisa-table td.num {
-        text-align: right;
-    }
-    .anvisa-table tr.header-row th {
-        font-size: 13px;
-        font-weight: bold;
-        text-align: center;
-        border-bottom: 2px solid #000000;
-    }
-    .anvisa-table tr.sub-header-row td {
-        font-weight: bold;
-        background-color: #f3f4f6;
-    }
-    .anvisa-table tr.indent-row td.name {
-        padding-left: 15px;
-    }
-    .lupa-box {
-        border: 3px solid #000000;
-        background-color: #ffffff;
-        padding: 8px 12px;
-        border-radius: 8px;
-        color: #000000 !important;
-        font-family: 'Arial Black', sans-serif;
-        font-size: 12px;
-        max-width: 420px;
-        margin: 1rem auto;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .lupa-icon {
-        font-size: 24px;
-    }
-    .lupa-text-bold {
-        font-weight: 900;
-        text-transform: uppercase;
-        font-size: 14px;
-        color: #000000 !important;
-    }
-    .legal-box {
-        background-color: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 1rem;
-        margin-top: 1rem;
-        font-family: 'Courier New', monospace;
-        font-size: 0.9rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+inject_custom_css()
 
 # --- INICIALIZAÇÃO E LEITURA DE DADOS ---
 
@@ -180,43 +54,6 @@ if not os.path.exists(CUSTOM_CSV_PATH):
         "Sódio (mg)"
     ])
     df_init.to_csv(CUSTOM_CSV_PATH, index=False, encoding="utf-8-sig")
-
-# Carregar dados unificados
-@st.cache_data(ttl=60) # Recarrega a cada 60s para atualizar novos cadastros
-def load_unified_data():
-    # Carregar JSON base
-    json_path = "alimentos_unified.json"
-    if not os.path.exists(json_path):
-        json_path = os.path.join(os.path.dirname(__file__), "alimentos_unified.json")
-    
-    with open(json_path, "r", encoding="utf-8-sig") as f:
-        foods = json.load(f)
-    
-    # Carregar Customizados do CSV
-    try:
-        custom_df = pd.read_csv(CUSTOM_CSV_PATH, encoding="utf-8-sig")
-        for idx, row in custom_df.iterrows():
-            nut_dict = {}
-            for col in custom_df.columns:
-                if col not in ["codigo", "descricao", "classe", "fonte"] and pd.notna(row[col]):
-                    nut_dict[col] = float(row[col])
-            
-            # Adicionar fallback para Carboidrato disponível e Açúcares totais
-            if "Carboidrato total (g)" in nut_dict:
-                nut_dict["Carboidrato disponível (g)"] = nut_dict["Carboidrato total (g)"]
-                nut_dict["Açúcares totais (g)"] = nut_dict.get("Açúcares adicionados (g)", 0.0)
-            
-            foods.append({
-                "c": row["codigo"],
-                "d": row["descricao"],
-                "g": row["classe"],
-                "f": row["fonte"],
-                "n": nut_dict
-            })
-    except Exception as e:
-        st.sidebar.error(f"Erro ao ler ingredientes manuais: {e}")
-        
-    return foods
 
 foods_data = load_unified_data()
 
@@ -255,518 +92,18 @@ if "product_type" not in st.session_state:
     st.session_state.product_type = "Sólido ou Semissólido"
 
 # --- VALORES DIÁRIOS DE REFERÊNCIA (VDR) ANVISA ---
-VDR = {
-    "Energia (kcal)": 2000.0,
-    "Carboidrato total (g)": 300.0,
-    "Açúcares adicionados (g)": 50.0,
-    "Proteína (g)": 50.0,
-    "Lipídios (g)": 65.0,
-    "Gorduras saturadas (g)": 20.0,
-    "Fibra alimentar (g)": 25.0,
-    "Sódio (mg)": 2000.0
-}
 
 # --- FUNÇÕES AUXILIARES DE PROCESSAMENTO ---
 
 # Obter valor numérico seguro do nutriente
-NUTRIENT_KEY_MAPPING = {
-    "Energia (kcal)": ["Energia (kcal)"],
-    "Carboidrato total (g)": ["Carboidrato total (g)", "Carboidrato disponível (g)", "Carboidrato disponí\xadvel (g)"],
-    "Açúcares adicionados (g)": ["Açúcares adicionados (g)", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
-    "Açúcares totais (g)": ["Açúcares totais (g)", "Açúcares totais", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
-    "Proteína (g)": ["Proteína (g)", "Prote\u00edna (g)", "Protena (g)"],
-    "Lipídios (g)": ["Lipídios (g)", "Lip\u00eddios (g)", "Lipdios (g)"],
-    "Gorduras saturadas (g)": ["Gorduras saturadas (g)", "Ácidos graxos saturados (g)", "\u00c1cidos graxos saturados (g)", "cidos graxos saturados (g)"],
-    "Gorduras trans (g)": ["Gorduras trans (g)", "Ácidos graxos trans (g)", "\u00c1cidos graxos trans (g)", "cidos graxos trans (g)"],
-    "Fibra alimentar (g)": ["Fibra alimentar (g)"],
-    "Sódio (mg)": ["Sódio (mg)", "S\u00f3dio (mg)", "Sdio (mg)"]
-}
-
-def get_num_val(nutrients_dict, key, food_desc=""):
-    candidates = NUTRIENT_KEY_MAPPING.get(key, [key])
-    val = None
-    
-    # 1. Procurar nas chaves candidatas
-    for cand in candidates:
-        if cand in nutrients_dict:
-            val = nutrients_dict[cand]
-            break
-            
-    # 2. Se não encontrar e for açúcar/mel puro na TACO, faz fallback
-    if val is None and key in ["Açúcares adicionados (g)", "Açúcares totais (g)"] and food_desc:
-        desc_lower = food_desc.lower()
-        is_sugar_product = (
-            "açúcar" in desc_lower or 
-            "acucar" in desc_lower or 
-            "melaço" in desc_lower or 
-            "melaco" in desc_lower or 
-            desc_lower == "mel" or 
-            desc_lower.startswith("mel ") or 
-            desc_lower.startswith("mel,")
-        )
-        if is_sugar_product:
-            val = get_num_val(nutrients_dict, "Carboidrato total (g)")
-            
-    if val is None:
-        return 0.0
-        
-    if isinstance(val, (int, float)):
-        return float(val)
-        
-    if isinstance(val, str):
-        val_clean = val.strip().lower()
-        if val_clean in ["tr", "nd", "na", "", "-", "n.d."]:
-            return 0.0
-        try:
-            return float(val_clean.replace(',', '.'))
-        except ValueError:
-            return 0.0
-            
-    return 0.0
 
 # Regra de arredondamento ANVISA (IN 75/2020)
-def round_anvisa(value, nutrient_name):
-    if value is None:
-        return "0"
-    
-    def dec_round(val, decs):
-        d = Decimal(f"{val:.10f}")
-        prec = Decimal('1') if decs == 0 else Decimal('.' + '0' * decs)
-        return float(d.quantize(prec, rounding=ROUND_HALF_UP))
-    
-    # 1. Regra para Valor Energético (kcal)
-    if nutrient_name == "Energia (kcal)":
-        return f"{int(dec_round(value, 0))}"
-        
-    # 2. Regra para Sódio (mg)
-    if nutrient_name == "Sódio (mg)":
-        if value <= 5.0:
-            return "0"
-        return f"{int(dec_round(value, 0))}"
-        
-    # 3. Regra para Gorduras Trans (g)
-    if nutrient_name == "Gorduras trans (g)":
-        if value <= 0.2:
-            return "0"
-        res = dec_round(value, 1)
-        if res.is_integer():
-            return f"{int(res)}"
-        return f"{res}".replace('.', ',')
-
-    # 4. Outros Macronutrientes (Carbos, Açúcares, Proteínas, Lipídios, Fibras)
-    if value <= 0.5:
-        return "0"
-    elif value < 10.0:
-        res = dec_round(value, 1)
-        if res.is_integer():
-            return f"{int(res)}"
-        return f"{res}".replace('.', ',')
-    else:
-        return f"{int(dec_round(value, 0))}"
-def generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio):
-    active_nutrients = []
-    if alto_acucar:
-        active_nutrients.append("AÇÚCAR ADICIONADO")
-    if alto_gordura:
-        active_nutrients.append("GORDURA SATURADA")
-    if alto_sodio:
-        active_nutrients.append("SÓDIO")
-        
-    num_nutrients = len(active_nutrients)
-    if num_nutrients == 0:
-        return ""
-        
-    # Dimensões dinâmicas (Largura 180 é o padrão ANVISA para lupas empilhadas)
-    width = 180
-    height = 15 + 45 + (num_nutrients * 60) # 1: 120, 2: 180, 3: 240
-    
-    svg = f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">'
-    # Borda externa com cantos arredondados
-    svg += f'<rect x="4" y="4" width="{width - 8}" height="{height - 8}" rx="15" ry="15" stroke="black" stroke-width="4" fill="white" />'
-    
-    # Caixa retangular interna "ALTO EM"
-    svg += '<rect x="15" y="15" width="150" height="38" rx="19" ry="19" stroke="black" stroke-width="4" fill="white" />'
-    
-    # Lente da lupa (círculo com borda grossa)
-    svg += '<circle cx="36" cy="34" r="12" stroke="black" stroke-width="4" fill="white" />'
-    # Cabo apontando para baixo-esquerda (exatamente como nas imagens da ANVISA)
-    svg += '<line x1="28" y1="42" x2="16" y2="54" stroke="black" stroke-width="6" stroke-linecap="round" />'
-    # Conexão do cabo à lente
-    svg += '<line x1="26" y1="40" x2="30" y2="44" stroke="black" stroke-width="8" />'
-    # Reflexo interno da lente
-    svg += '<path d="M29 32 A 8 8 0 0 1 41 28" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" />'
-    
-    # Texto "ALTO EM"
-    svg += '<text x="105" y="40" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="15" fill="black" text-anchor="middle">ALTO EM</text>'
-    
-    # Blocos de nutrientes empilhados verticalmente
-    y_start = 63
-    for i, nut in enumerate(active_nutrients):
-        y_pos = y_start + (i * 55)
-        # Caixa preta do nutriente com cantos levemente arredondados
-        svg += f'<rect x="15" y="{y_pos}" width="150" height="50" rx="12" ry="12" fill="black" />'
-        
-        # Inserir o texto do nutriente em branco
-        if nut == "SÓDIO":
-            svg += f'<text x="90" y="{y_pos + 31}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="15" fill="white" text-anchor="middle">SÓDIO</text>'
-        elif nut == "AÇÚCAR ADICIONADO":
-            svg += f'<text x="90" y="{y_pos + 21}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">AÇÚCAR</text>'
-            svg += f'<text x="90" y="{y_pos + 38}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">ADICIONADO</text>'
-        elif nut == "GORDURA SATURADA":
-            svg += f'<text x="90" y="{y_pos + 21}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">GORDURA</text>'
-            svg += f'<text x="90" y="{y_pos + 38}" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="12" fill="white" text-anchor="middle">SATURADA</text>'
-            
-    svg += '</svg>'
-    return svg
-
-def get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio):
-    import base64  # Será removido do meio do arquivo ou deixado se necessário. Mas wait, let's keep base64 import at top. Let's make sure it is at the top.
-    db_path = os.path.join(BASE_DIR, "lupas_db.json")
-    
-    if os.path.exists(db_path):
-        try:
-            with open(db_path, "r", encoding="utf-8") as f:
-                db = json.load(f)
-            for key, val in db.items():
-                if val.get("acucar") == alto_acucar and val.get("gordura") == alto_gordura and val.get("sodio") == alto_sodio:
-                    filename = val.get("filename")
-                    img_path = os.path.join(BASE_DIR, "lupas", filename)
-                    if os.path.exists(img_path):
-                        return img_path
-        except Exception as e:
-            logger.warning(f"Erro ao carregar banco de dados de lupas: {e}", exc_info=True)
-    return None
-
-def get_lupa_html(alto_acucar, alto_gordura, alto_sodio, width_px=180):
-    img_path = get_lupa_image_path(alto_acucar, alto_gordura, alto_sodio)
-    if img_path:
-        try:
-            import base64
-            with open(img_path, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-            return f'<img src="data:image/png;base64,{encoded_string}" width="{width_px}" style="display: block; margin: 0 auto;" />'
-        except Exception as e:
-            logger.warning(f"Erro ao codificar imagem da lupa em base64: {e}", exc_info=True)
-    return generate_anvisa_lupa_svg(alto_acucar, alto_gordura, alto_sodio)
-
-def validate_cpf(cpf_str):
-    if not cpf_str:
-        return False
-    # Remover caracteres não numéricos
-    cpf = ''.join(filter(str.isdigit, cpf_str))
-    
-    if len(cpf) != 11:
-        return False
-        
-    # CPFs com dígitos todos iguais são inválidos
-    if cpf == cpf[0] * 11:
-        return False
-        
-    # Validação do primeiro dígito
-    soma = sum(int(cpf[i]) * (10 - i) for i in range(9))
-    resto = (soma * 10) % 11
-    if resto == 10:
-        resto = 0
-    if resto != int(cpf[9]):
-        return False
-        
-    # Validação do segundo dígito
-    soma = sum(int(cpf[i]) * (11 - i) for i in range(10))
-    resto = (soma * 10) % 11
-    if resto == 10:
-        resto = 0
-    if resto != int(cpf[10]):
-        return False
-        
-    return True
-
-def load_users():
-    with db_lock:
-        users = []
-        if os.path.exists(USERS_JSON_PATH):
-            try:
-                with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-                    users = json.load(f)
-            except Exception as e:
-                logger.error(f"Erro ao carregar usuários: {e}", exc_info=True)
-                st.error(f"Erro ao carregar usuários: {e}")
-                
-        # Garantir que exista pelo menos um administrador
-        has_admin = any(u.get("is_admin", False) for u in users)
-        if not has_admin:
-            admin_pwd = get_default_admin_password()
-            default_admin = {
-                "username": "admin",
-                "email": "admin@rotulofacil.com",
-                "cpf": "00000000000",
-                "password_hash": hash_password(admin_pwd),
-                "is_admin": True,
-                "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "lgpd_version": "1.0"
-            }
-            # Adicionar o admin se não estiver na lista de usuários
-            admin_exists = any(u["username"].lower() == "admin" for u in users)
-            if not admin_exists:
-                users.append(default_admin)
-            else:
-                # Caso o usuário admin exista mas não seja admin, ativa a flag
-                for u in users:
-                    if u["username"].lower() == "admin":
-                        u["is_admin"] = True
-                        break
-            safe_save_json(USERS_JSON_PATH, users)
-            
-        return users
-
-def save_users(users):
-    with db_lock:
-        return safe_save_json(USERS_JSON_PATH, users)
-
-def hash_password(password, salt=None):
-    if not salt:
-        salt = os.urandom(32)
-    else:
-        salt = bytes.fromhex(salt) if isinstance(salt, str) else salt
-    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 600_000)
-    return f"{salt.hex()}:{key.hex()}"
-
-def verify_password(stored_password, provided_password):
-    if ":" not in stored_password:
-        return False
-    salt, stored_hash = stored_password.split(':')
-    # Compatibilidade retroativa com hashes antigos (SHA-256 simples)
-    if len(salt) == 32 and len(stored_hash) == 64:
-        return stored_hash == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
-    try:
-        salt_bytes = bytes.fromhex(salt)
-        key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt_bytes, 600_000)
-        return stored_hash == key.hex()
-    except Exception as e:
-        logger.warning(f"Erro ao verificar senha: {e}", exc_info=True)
-        return False
-
-def register_user(username, email, cpf, password, lgpd_accepted):
-    if not lgpd_accepted:
-        return False, "Você precisa aceitar os termos da LGPD para se cadastrar."
-    
-    username_clean = username.strip()
-    email_clean = email.strip()
-    cpf_digits = ''.join(filter(str.isdigit, cpf))
-    
-    if not username_clean:
-        return False, "O nome de usuário não pode ser vazio."
-        
-    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
-    if not EMAIL_RE.match(email_clean):
-        return False, "Por favor, informe um endereço de e-mail válido."
-        
-    if not cpf_digits or not validate_cpf(cpf_digits):
-        return False, "Por favor, informe um CPF válido."
-    if len(password) < 8:
-        return False, "A senha deve conter pelo menos 8 caracteres."
-        
-    users = load_users()
-    for u in users:
-        if u["username"].lower() == username_clean.lower():
-            return False, "Este nome de usuário já está em uso."
-        if u.get("email", "").lower() == email_clean.lower():
-            return False, "Este endereço de e-mail já está cadastrado."
-        db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
-        if db_cpf == cpf_digits:
-            return False, "Este CPF já está cadastrado em outra conta."
-            
-    new_user = {
-        "username": username_clean,
-        "email": email_clean,
-        "cpf": cpf_digits,
-        "password_hash": hash_password(password),
-        "is_admin": False,
-        "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "lgpd_version": "1.0"
-    }
-    users.append(new_user)
-    if save_users(users):
-        return True, "Usuário cadastrado com sucesso!"
-    return False, "Erro ao gravar cadastro no banco de dados."
-
-def authenticate_user(username, password):
-    username_clean = username.strip()
-    if not username_clean or not password:
-        return False, "Por favor, preencha todos os campos.", False
-        
-    if "login_attempts" not in st.session_state:
-        st.session_state.login_attempts = 0
-        
-    if st.session_state.login_attempts >= 5:
-        return False, "Acesso bloqueado temporariamente por excesso de tentativas falhas.", False
-        
-    users = load_users()
-    for u in users:
-        if u["username"].lower() == username_clean.lower():
-            if verify_password(u["password_hash"], password):
-                st.session_state.login_attempts = 0
-                return True, u["username"], u.get("is_admin", False)
-            else:
-                st.session_state.login_attempts += 1
-                attempts_left = max(0, 5 - st.session_state.login_attempts)
-                return False, f"Senha incorreta. {attempts_left} tentativa(s) restante(s).", False
-                
-    st.session_state.login_attempts += 1
-    attempts_left = max(0, 5 - st.session_state.login_attempts)
-    return False, f"Usuário não encontrado. {attempts_left} tentativa(s) restante(s).", False
-
-def admin_delete_user(username_to_delete):
-    username_clean = username_to_delete.strip().lower()
-    with db_lock:
-        users = load_users()
-        
-        # Prevenir que o admin delete a si mesmo
-        if st.session_state.get("username", "").strip().lower() == username_clean:
-            return False, "Você não pode excluir a sua própria conta ativa de administrador."
-            
-        # Manter todos exceto o usuário excluído
-        new_users = [u for u in users if u["username"].strip().lower() != username_clean]
-        
-        if len(new_users) == len(users):
-            return False, "Usuário não encontrado."
-            
-        if safe_save_json(USERS_JSON_PATH, new_users):
-            # Exclusão em cascata de receitas
-            recipes = load_saved_recipes()
-            new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
-            safe_save_json(RECIPES_JSON_PATH, new_recipes)
-            return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
-            
-        return False, "Erro ao atualizar banco de dados de usuários."
-
-def admin_update_user(old_username, new_username, new_email, new_cpf, new_password=None, is_admin_val=False):
-    old_clean = old_username.strip().lower()
-    new_username_clean = new_username.strip()
-    new_email_clean = new_email.strip()
-    new_cpf_digits = ''.join(filter(str.isdigit, new_cpf))
-    
-    if not new_username_clean:
-        return False, "O nome de usuário não pode ser vazio."
-        
-    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
-    if not EMAIL_RE.match(new_email_clean):
-        return False, "Por favor, informe um endereço de e-mail válido."
-        
-    # Permitir CPF especial para a conta padrão admin (00000000000), senão deve validar
-    if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
-        return False, "Por favor, informe um CPF válido."
-        
-    with db_lock:
-        users = load_users()
-        
-        # Validar duplicidades com outros usuários
-        for u in users:
-            u_name = u["username"].strip().lower()
-            if u_name == old_clean:
-                continue # Pular validação com a própria conta
-                
-            if u_name == new_username_clean.lower():
-                return False, "Este nome de usuário já está em uso por outra conta."
-            if u.get("email", "").strip().lower() == new_email_clean.lower():
-                return False, "Este endereço de e-mail já está cadastrado em outra conta."
-            db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
-            if db_cpf == new_cpf_digits:
-                return False, "Este CPF já está cadastrado em outra conta."
-                
-        # Atualizar dados do usuário
-        updated = False
-        for u in users:
-            if u["username"].strip().lower() == old_clean:
-                u["username"] = new_username_clean
-                u["email"] = new_email_clean
-                u["cpf"] = new_cpf_digits
-                u["is_admin"] = is_admin_val
-                if new_password:
-                    if len(new_password) < 8:
-                        return False, "A senha deve conter pelo menos 8 caracteres."
-                    u["password_hash"] = hash_password(new_password)
-                updated = True
-                break
-                
-        if not updated:
-            return False, "Usuário de origem não encontrado."
-            
-        if safe_save_json(USERS_JSON_PATH, users):
-            # Atualizar a propriedade das receitas se o nome de usuário mudou
-            if old_clean != new_username_clean.lower():
-                recipes = load_saved_recipes()
-                for r in recipes:
-                    if r.get("username", "").strip().lower() == old_clean:
-                        r["username"] = new_username_clean
-                safe_save_json(RECIPES_JSON_PATH, recipes)
-            return True, "Cadastro do usuário atualizado com sucesso!"
-            
-        return False, "Erro ao gravar alterações no banco de dados."
-
-def load_saved_recipes():
-    with db_lock:
-        if not os.path.exists(RECIPES_JSON_PATH):
-            return []
-        try:
-            with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Erro ao carregar receitas salvas: {e}", exc_info=True)
-            st.error(f"Erro ao carregar receitas salvas: {e}")
-            return []
-
-def save_recipe(name):
-    with db_lock:
-        recipes = load_saved_recipes()
-        username = st.session_state.get("username", "")
-        new_recipe = {
-            "nome": name,
-            "username": username,
-            "nome_produto": st.session_state.get("nome_produto", ""),
-            "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
-            "ingredients": st.session_state.recipe,
-            "weight_final": st.session_state.weight_final,
-            "portion_size": st.session_state.portion_size,
-            "case_measure": st.session_state.case_measure,
-            "gluten_opt": st.session_state.gluten_opt,
-            "lactose_opt": st.session_state.lactose_opt,
-            "allergens_direct": st.session_state.allergens_direct,
-            "allergens_deriv": st.session_state.allergens_deriv,
-            "allergens_may_contain": st.session_state.allergens_may_contain,
-            "product_type": st.session_state.product_type,
-            "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        # Substituir se já existir com o mesmo nome e pertencer ao mesmo usuário
-        existing_idx = -1
-        for idx, r in enumerate(recipes):
-            recipe_username = r.get("username", "")
-            if r["nome"].lower() == name.lower() and (recipe_username == "" or recipe_username.lower() == username.lower()):
-                existing_idx = idx
-                break
-                
-        if existing_idx >= 0:
-            recipes[existing_idx] = new_recipe
-        else:
-            recipes.append(new_recipe)
-            
-        return safe_save_json(RECIPES_JSON_PATH, recipes)
-
-def delete_recipe(name):
-    with db_lock:
-        recipes = load_saved_recipes()
-        username = st.session_state.get("username", "")
-        # Manter receitas que pertencem a outros usuários ou que têm nome diferente
-        recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
-        return safe_save_json(RECIPES_JSON_PATH, recipes)
-
-@st.dialog("Salvar Receita")
 def save_recipe_dialog():
     st.write("Digite o nome para salvar a receita atual com seus ingredientes e configurações.")
     name = st.text_input("Nome da Receita:", placeholder="Ex: Bolo de Cenoura com Chocolate", key="new_recipe_name")
     if st.button("Confirmar e Salvar", type="primary", use_container_width=True):
         if name.strip():
-            if save_recipe(name.strip()):
+            if save_recipe(name.strip(), db_lock):
                 st.success(f"Receita '{name.strip()}' salva com sucesso!")
                 st.rerun()
         else:
@@ -782,7 +119,7 @@ if not st.session_state.logged_in:
     col_left, col_center, col_right = st.columns([1, 1.2, 1])
     
     with col_center:
-        auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta"], horizontal=True, label_visibility="collapsed")
+        auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta", "Esqueci minha senha"], horizontal=True, label_visibility="collapsed")
         
         st.markdown("---")
         
@@ -792,7 +129,7 @@ if not st.session_state.logged_in:
             login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
             
             if st.button("Acessar Painel", type="primary", use_container_width=True):
-                success, result, is_admin = authenticate_user(login_user, login_pass)
+                success, result, is_admin = authenticate_user(login_user, login_pass, db_lock)
                 if success:
                     st.session_state.logged_in = True
                     st.session_state.username = result
@@ -801,6 +138,28 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else:
                     st.error(result)
+                    
+        elif auth_mode == "Esqueci minha senha":
+            st.markdown("### 🔓 Recuperação de Senha")
+            st.info("Para redefinir sua senha, você deve fornecer com exatidão o Nome de Usuário, E-mail e CPF cadastrados.")
+            rec_user = st.text_input("Nome de Usuário:", key="rec_username")
+            rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
+            rec_cpf = st.text_input("CPF cadastrado:", key="rec_cpf")
+            rec_new_pass = st.text_input("Nova Senha:", type="password", key="rec_new_pass")
+            rec_new_pass_confirm = st.text_input("Confirme a Nova Senha:", type="password", key="rec_new_pass_confirm")
+            
+            if st.button("Redefinir Senha", type="primary", use_container_width=True):
+                if not rec_user or not rec_email or not rec_cpf or not rec_new_pass or not rec_new_pass_confirm:
+                    st.error("Preencha todos os campos para recuperar a senha.")
+                elif rec_new_pass != rec_new_pass_confirm:
+                    st.error("As senhas não coincidem.")
+                else:
+                    from utils.auth import recover_password
+                    success, msg = recover_password(rec_user, rec_email, rec_cpf, rec_new_pass, db_lock)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
                     
         else: # Criar Nova Conta
             st.markdown("### 📝 Criar Nova Conta")
@@ -836,7 +195,7 @@ if not st.session_state.logged_in:
                 elif not lgpd_accept:
                     st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
                 else:
-                    success, msg = register_user(new_user, new_email, new_cpf, new_pass, lgpd_accept)
+                    success, msg = register_user(new_user, new_email, new_cpf, new_pass, lgpd_accept, db_lock)
                     if success:
                         st.session_state.logged_in = True
                         st.session_state.username = new_user.strip()
@@ -870,7 +229,8 @@ with st.sidebar:
 tab_titles = [
     "📋 Calculadora & Rótulo ANVISA", 
     "📁 Minhas Receitas Salvas", 
-    "➕ Cadastrar Novo Ingrediente"
+    "➕ Cadastrar Novo Ingrediente",
+    "👤 Meu Perfil"
 ]
 is_admin = st.session_state.get("is_admin", False)
 if is_admin:
@@ -880,8 +240,9 @@ tabs = st.tabs(tab_titles)
 tab_app = tabs[0]
 tab_receitas = tabs[1]
 tab_cadastro = tabs[2]
+tab_perfil = tabs[3]
 if is_admin:
-    tab_admin = tabs[3]
+    tab_admin = tabs[4]
 
 # ==============================================================================
 # TAB 1: CALCULADORA E RÓTULO
@@ -908,7 +269,12 @@ with tab_app:
         q = search_query.lower().strip()
         if q:
             # Filtrar ingredientes que contêm o termo buscado
-            matched_foods = [f for f in foods_data if q in f["d"].lower() or q in f["c"].lower()]
+
+            from utils.data_loader import get_recipes_as_ingredients
+            curr_user = st.session_state.get("username", "")
+            sub_recipes = get_recipes_as_ingredients(db_lock, curr_user)
+            dynamic_foods = foods_data + sub_recipes
+            matched_foods = [f for f in dynamic_foods if q in f["d"].lower() or q in f["c"].lower()]
             
             # Função de cálculo de score de relevância (menor score = maior prioridade)
             def get_match_score(food):
@@ -957,6 +323,7 @@ with tab_app:
                 "d": selected_recipe_food["d"],
                 "f": selected_recipe_food["f"],
                 "w": ing_weight,
+                "cost_kg": selected_recipe_food["n"].get("Custo (R$/kg)", 0.0),
                 "n": selected_recipe_food["n"]
             })
             st.session_state.calculated = False
@@ -969,8 +336,20 @@ with tab_app:
         
         # Se houver ingredientes, renderizamos o formulário
         if len(st.session_state.recipe) > 0:
-            col_hdr, col_clr = st.columns([3, 1])
+            col_hdr, col_mul, col_div, col_clr = st.columns([2, 0.5, 0.5, 1])
             col_hdr.markdown("### 🛒 Ingredientes na Receita")
+            if col_mul.button("✖️ 2x", type="secondary", use_container_width=True, help="Dobrar receita"):
+                for ing in st.session_state.recipe:
+                    ing["w"] *= 2.0
+                st.session_state.weight_final *= 2.0
+                st.session_state.calculated = False
+                st.rerun()
+            if col_div.button("➗ 0.5x", type="secondary", use_container_width=True, help="Cortar pela metade"):
+                for ing in st.session_state.recipe:
+                    ing["w"] /= 2.0
+                st.session_state.weight_final /= 2.0
+                st.session_state.calculated = False
+                st.rerun()
             if col_clr.button("Limpar Tudo", type="secondary", use_container_width=True):
                 st.session_state.recipe = []
                 st.session_state.weight_final = 0.0
@@ -985,7 +364,7 @@ with tab_app:
                 # Lista de ingredientes dentro do form
                 new_recipe_list = []
                 for idx, ing in enumerate(st.session_state.recipe):
-                    col_ing_name, col_ing_weight, col_ing_del = st.columns([2.5, 1.5, 0.5])
+                    col_ing_name, col_ing_weight, col_ing_cost, col_ing_del = st.columns([2.0, 1.2, 1.0, 0.3])
                     safe_d = html.escape(ing['d'])
                     safe_f = html.escape(ing['f'])
                     safe_c = html.escape(ing['c'])
@@ -997,12 +376,32 @@ with tab_app:
                         value=float(ing['w']),
                         key=f"ing_w_{idx}_{ing['c']}",
                         step=5.0,
-                        label_visibility="collapsed"
+                        help="Peso utilizado na receita (em gramas)"
                     )
                     
+                    cost_val = col_ing_cost.number_input(
+                        "Custo R$/kg",
+                        min_value=0.0,
+                        value=float(ing.get('cost_kg', 0.0)),
+                        key=f"ing_cost_{idx}_{ing['c']}",
+                        step=1.0,
+                        help="Custo do ingrediente por Quilo (R$/kg)"
+                    )
+                    
+                    st.markdown("""
+                        <style>
+                        /* Alinha o ícone de remover com os campos de input */
+                        div[data-testid="column"]:nth-of-type(4) {
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            margin-top: 28px;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
                     rem_val = col_ing_del.checkbox("🗑️", key=f"ing_rem_{idx}_{ing['c']}", help="Remover ingrediente")
                     
-                    new_recipe_list.append((ing, w_val, rem_val))
+                    new_recipe_list.append((ing, w_val, cost_val, rem_val))
                 
                 st.markdown("---")
                 
@@ -1121,10 +520,11 @@ with tab_app:
                 if calculate_btn:
                     # Atualizar lista de ingredientes removendo os marcados e ajustando os pesos
                     processed_recipe = []
-                    for ing, w, rem in new_recipe_list:
+                    for ing, w, cost_val, rem in new_recipe_list:
                         if not rem:
                             ing_copy = ing.copy()
                             ing_copy["w"] = w
+                            ing_copy["cost_kg"] = cost_val
                             processed_recipe.append(ing_copy)
                     
                     st.session_state.recipe = processed_recipe
@@ -1166,6 +566,7 @@ with tab_app:
         peso_embalagem = st.session_state.get("peso_embalagem", 0.0)
 
         # 1. Somar nutrientes totais ponderados pelo peso dos ingredientes
+        total_recipe_cost = 0.0
         raw_totals = {
             "Energia (kcal)": 0.0,
             "Carboidrato total (g)": 0.0,
@@ -1181,6 +582,7 @@ with tab_app:
         
         for ing in st.session_state.recipe:
             factor = ing["w"] / 100.0
+            total_recipe_cost += ing.get("cost_kg", 0.0) * (ing["w"] / 1000.0)
             
             raw_totals["Energia (kcal)"] += get_num_val(ing["n"], "Energia (kcal)", ing["d"]) * factor
             
@@ -1245,6 +647,8 @@ with tab_app:
         # Exibir painel direito (Visualização da Tabela ANVISA, Lupa e Textos Legais)
         with col_label:
             st.markdown("### 📋 Pré-visualização do Rótulo")
+            cost_per_portion = (total_recipe_cost / weight_final) * portion_size
+            st.info(f"**Custo Estimado da Receita:** R$ {total_recipe_cost:.2f} | **Custo por Porção:** R$ {cost_per_portion:.2f}")
             
             # Exibir nome do produto no painel de pré-visualização
             # Exibir nome do produto no painel de pré-visualização
@@ -1612,7 +1016,7 @@ with tab_receitas:
     st.markdown("Consulte, carregue ou remova receitas salvas localmente no banco de dados do aplicativo.")
     
     current_username = st.session_state.get("username", "")
-    all_recipes = load_saved_recipes()
+    all_recipes = load_saved_recipes(db_lock)
     # Filtrar para exibir apenas receitas públicas/legadas ou do usuário logado
     saved_recipes = [r for r in all_recipes if r.get("username", "") == "" or r.get("username", "").lower() == current_username.lower()]
     
@@ -1664,7 +1068,7 @@ with tab_receitas:
                 """)
                 
             st.markdown("---")
-            col_load, col_del = st.columns(2)
+            col_load, col_clone, col_del = st.columns(3)
             
             with col_load:
                 if st.button("🔌 Carregar e Recalcular Receita", type="primary", use_container_width=True):
@@ -1684,9 +1088,27 @@ with tab_receitas:
                     st.toast(f"Receita **{selected_name}** carregada com sucesso!")
                     st.rerun()
                     
+
+            with col_clone:
+                if st.button("📄 Carregar como Cópia", type="secondary", use_container_width=True, help="Carrega a receita pronta para ser salva como uma nova versão."):
+                    st.session_state.recipe = recipe["ingredients"]
+                    st.session_state.weight_final = recipe["weight_final"]
+                    st.session_state.portion_size = recipe["portion_size"]
+                    st.session_state.case_measure = recipe["case_measure"]
+                    st.session_state.gluten_opt = recipe["gluten_opt"]
+                    st.session_state.lactose_opt = recipe["lactose_opt"]
+                    st.session_state.allergens_direct = recipe.get("allergens_direct", recipe.get("selected_allergens", []))
+                    st.session_state.allergens_deriv = recipe.get("allergens_deriv", [])
+                    st.session_state.allergens_may_contain = recipe.get("allergens_may_contain", [])
+                    st.session_state.product_type = recipe.get("product_type", "Sólido ou Semissólido")
+                    st.session_state.nome_produto = recipe.get("nome_produto", "") + " (Cópia)"
+                    st.session_state.peso_embalagem = float(recipe.get("peso_embalagem", 0.0))
+                    st.session_state.calculated = True
+                    st.toast(f"Cópia da receita pronta para edição!")
+                    st.rerun()
             with col_del:
                 if st.button("🗑️ Excluir Receita Permanentemente", type="secondary", use_container_width=True):
-                    if delete_recipe(selected_name):
+                    if delete_recipe(selected_name, db_lock):
                         st.toast(f"Receita **{selected_name}** excluída com sucesso!")
                         st.rerun()
 
@@ -1699,9 +1121,10 @@ with tab_cadastro:
     
     with st.form("form_cadastro_ingrediente", clear_on_submit=True):
         col_cad1, col_cad2 = st.columns(2)
-        
+        col_cad1, col_cad2, col_cad3 = st.columns([2, 1, 1])
         name_ing = col_cad1.text_input("Nome do Alimento / Ingrediente:", placeholder="Ex: Whey Protein Isolado Morango")
         portion_ref = col_cad2.number_input("Porção de Referência do Rótulo (g):", min_value=1.0, value=100.0, step=5.0, help="O peso da porção informada no rótulo (ex: 30g).")
+        cost_ref = col_cad3.number_input("Custo R$/kg:", min_value=0.0, value=0.0, step=1.0, help="Custo do ingrediente por Quilo")
         
         st.markdown("##### Nutrientes por Porção:")
         
@@ -1763,7 +1186,8 @@ with tab_cadastro:
                     "Gorduras saturadas (g)": sat_fat_100g,
                     "Gorduras trans (g)": trans_fat_100g,
                     "Fibra alimentar (g)": fiber_100g,
-                    "Sódio (mg)": sodium_100g
+                    "Sódio (mg)": sodium_100g,
+                    "Custo (R$/kg)": cost_ref
                 }])
                 
                 # Salvar no CSV
@@ -1778,12 +1202,61 @@ with tab_cadastro:
 # ==============================================================================
 # TAB 4: PAINEL ADMINISTRADOR
 # ==============================================================================
+
+# ==============================================================================
+# TAB 4: MEU PERFIL
+# ==============================================================================
+with tab_perfil:
+    st.markdown('### 👤 Meu Perfil')
+    st.markdown('Edite suas informações cadastrais.')
+    
+    current_username = st.session_state.username
+    all_users = load_users(db_lock)
+    user_data = next((u for u in all_users if u['username'] == current_username), None)
+    
+    if user_data:
+        with st.form('form_meu_perfil'):
+            edit_email = st.text_input('E-mail:', value=user_data.get('email', ''))
+            
+            # Formatar CPF atual
+            c = user_data.get('cpf', '')
+            c_digits = ''.join(filter(str.isdigit, c))
+            if len(c_digits) == 11:
+                cpf_display = f'{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}'
+            else:
+                cpf_display = c
+                
+            edit_cpf = st.text_input('CPF:', value=cpf_display)
+            edit_pass = st.text_input('Nova Senha (deixe em branco para manter a atual):', type='password')
+            edit_pass_confirm = st.text_input('Confirme a Nova Senha:', type='password')
+            
+            submit_perfil = st.form_submit_button('Salvar Alterações', type='primary')
+            if submit_perfil:
+                if edit_pass and edit_pass != edit_pass_confirm:
+                    st.error('As senhas não coincidem.')
+                else:
+                    success, msg = admin_update_user(
+                        current_username, 
+                        current_username, 
+                        edit_email, 
+                        edit_cpf, 
+                        db_lock, 
+                        edit_pass if edit_pass.strip() else None, 
+                        user_data.get('is_admin', False)
+                    )
+                    if success:
+                        st.success('Perfil atualizado com sucesso!')
+                    else:
+                        st.error(msg)
+    else:
+        st.error('Não foi possível carregar os dados do seu perfil.')
+
 if is_admin:
     with tab_admin:
         st.markdown("### 🔑 Painel do Administrador")
         st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
         
-        users = load_users()
+        users = load_users(db_lock)
         
         # Formatar CPF para exibição
         def format_cpf(c):
@@ -1851,11 +1324,11 @@ if is_admin:
                 submit_create = st.form_submit_button("Cadastrar Usuário", type="primary")
                 if submit_create:
                     # Chamar register_user que já faz todas as validações (passando True para LGPD pois é feito pelo admin)
-                    success, msg = register_user(create_name, create_email, create_cpf, create_pass, lgpd_accepted=True)
+                    success, msg = register_user(create_name, create_email, create_cpf, create_pass, lgpd_accepted=True, db_lock=db_lock)
                     if success:
                         # Se admin flag foi marcada, atualizamos o usuário criado
                         if create_is_admin:
-                            admin_update_user(create_name, create_name, create_email, create_cpf, None, is_admin_val=True)
+                            admin_update_user(create_name, create_name, create_email, create_cpf, db_lock, None, is_admin_val=True)
                         st.success(f"Usuário '{create_name}' cadastrado com sucesso!")
                         st.rerun()
                     else:
@@ -1877,7 +1350,7 @@ if is_admin:
                 
                 if st.button("Excluir Usuário Definitivamente", type="secondary", use_container_width=True):
                     if confirm_del_text.strip() == selected_del_username:
-                        success, msg = admin_delete_user(selected_del_username)
+                        success, msg = admin_delete_user(selected_del_username, db_lock)
                         if success:
                             st.success(msg)
                             st.rerun()
