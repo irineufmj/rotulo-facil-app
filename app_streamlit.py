@@ -352,7 +352,7 @@ with tab_app:
                 st.rerun()
                 
             # Formulário de controle de processamento
-            with st.form("form_calculadora_rotulo"):
+            with st.container():
                 st.markdown("##### Ajuste os Pesos (g) ou marque para remover:")
                 
                 # Lista de ingredientes dentro do form
@@ -395,7 +395,21 @@ with tab_app:
                     """, unsafe_allow_html=True)
                     rem_val = col_ing_del.checkbox("🗑️", key=f"ing_rem_{idx}_{ing['c']}", help="Remover ingrediente")
                     
-                    new_recipe_list.append((ing, w_val, cost_val, rem_val))
+                    if not rem_val:
+                        ing_copy = ing.copy()
+                        if ing_copy["w"] != w_val or ing_copy.get("cost_kg", 0.0) != cost_val:
+                            ing_copy["w"] = w_val
+                            ing_copy["cost_kg"] = cost_val
+                        new_recipe_list.append(ing_copy)
+                        
+                # Update session state if there are changes (weight adjust or deletion)
+                if len(new_recipe_list) != len(st.session_state.recipe) or any(
+                    n['w'] != o['w'] or n.get('cost_kg', 0.0) != o.get('cost_kg', 0.0) 
+                    for n, o in zip(new_recipe_list, st.session_state.recipe)
+                ):
+                    st.session_state.recipe = new_recipe_list
+                    st.session_state.calculated = False
+                    st.rerun()
                 
                 st.markdown("---")
                 
@@ -509,19 +523,11 @@ with tab_app:
                 )
                 
                 # Botão destacado
-                calculate_btn = st.form_submit_button("Calcular Rótulo Oficial", type="primary", use_container_width=True)
+                calculate_btn = st.button("Calcular Rótulo Oficial", type="primary", use_container_width=True)
                 
                 if calculate_btn:
-                    # Atualizar lista de ingredientes removendo os marcados e ajustando os pesos
-                    processed_recipe = []
-                    for ing, w, cost_val, rem in new_recipe_list:
-                        if not rem:
-                            ing_copy = ing.copy()
-                            ing_copy["w"] = w
-                            ing_copy["cost_kg"] = cost_val
-                            processed_recipe.append(ing_copy)
-                    
-                    st.session_state.recipe = processed_recipe
+                    # recipe list is already updated interactively
+                    processed_recipe = st.session_state.recipe
                     st.session_state.weight_final = weight_final
                     st.session_state.portion_size = portion_size
                     st.session_state.case_measure = case_measure
