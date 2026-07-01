@@ -305,7 +305,7 @@ with tab_app:
         selected_recipe_food = st.selectbox(
             "Selecione o ingrediente da lista:",
             options=filtered_for_recipe,
-            format_func=lambda x: f"[{x['f']}] {x['c']} - {x['d']}"
+            format_func=lambda x: f"[{x['f']}] {x['d']}"
         )
         
         col_w, col_btn = st.columns([2, 1])
@@ -650,19 +650,26 @@ with tab_app:
                 safe_nome_produto = html.escape(st.session_state.nome_produto)
                 st.markdown(f"##### Produto: **{safe_nome_produto}**")
             
-            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
-            # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
-            if alto_acucar or alto_gordura or alto_sodio:
-                lupa_content_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
-            else:
-                lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
+            st.divider() # Separação visual superior
+            
+            with st.container():
+                # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
+                # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
+                if alto_acucar or alto_gordura or alto_sodio:
+                    lupa_content_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
+                else:
+                    lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
+                    
+                lupa_container_html = f"""
+                <div style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto;">
+                    {lupa_content_html}
+                </div>
+                """
+                st.markdown(lupa_container_html, unsafe_allow_html=True)
                 
-            lupa_container_html = f"""
-            <div style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto;">
-                {lupa_content_html}
-            </div>
-            """
-            st.markdown(lupa_container_html, unsafe_allow_html=True)
+                # AVISO DE COMPROVAÇÃO DA LUPA (Simulador)
+                st.markdown("<p style='text-align: center; font-size: 11px; color: gray; line-height: 1.2;'>* Os selos de rotulagem frontal (Lupa) são gerados automaticamente caso o produto atinja os limites da RDC 429/2020 por 100g (Açúcar Adicionado &ge; 15g, Gordura Saturada &ge; 6g, Sódio &ge; 600mg).</p>", unsafe_allow_html=True)
+
             
             # Calcular número de porções conforme regras da ANVISA
             # Se peso_embalagem foi informado, calcula com base nele; senão, usa o rendimento da receita
@@ -769,8 +776,8 @@ with tab_app:
             """
             st.markdown(table_html, unsafe_allow_html=True)
             
-
-                
+            st.divider() # Separação visual inferior
+            
             # --- Lista de Ingredientes Decrescente ---
             # Ordenar ingredientes por peso decrescente
             sorted_ingredients = sorted(st.session_state.recipe, key=lambda x: x["w"], reverse=True)
