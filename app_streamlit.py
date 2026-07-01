@@ -333,15 +333,25 @@ with tab_app:
             col_hdr, col_mul, col_div, col_clr = st.columns([2, 0.5, 0.5, 1])
             col_hdr.markdown("### 🛒 Ingredientes na Receita")
             if col_mul.button("✖️ 2x", type="secondary", use_container_width=True, help="Dobrar receita"):
-                for ing in st.session_state.recipe:
+                for idx, ing in enumerate(st.session_state.recipe):
                     ing["w"] *= 2.0
+                    widget_key = f"ing_w_{ing['c']}_{idx}"
+                    if widget_key in st.session_state:
+                        st.session_state[widget_key] = float(ing["w"])
                 st.session_state.weight_final *= 2.0
+                if "weight_final_widget" in st.session_state:
+                    st.session_state["weight_final_widget"] = float(st.session_state.weight_final)
                 st.session_state.calculated = False
                 st.rerun()
             if col_div.button("➗ 0.5x", type="secondary", use_container_width=True, help="Cortar pela metade"):
-                for ing in st.session_state.recipe:
+                for idx, ing in enumerate(st.session_state.recipe):
                     ing["w"] /= 2.0
+                    widget_key = f"ing_w_{ing['c']}_{idx}"
+                    if widget_key in st.session_state:
+                        st.session_state[widget_key] = float(ing["w"])
                 st.session_state.weight_final /= 2.0
+                if "weight_final_widget" in st.session_state:
+                    st.session_state["weight_final_widget"] = float(st.session_state.weight_final)
                 st.session_state.calculated = False
                 st.rerun()
             if col_clr.button("Limpar Tudo", type="secondary", use_container_width=True):
