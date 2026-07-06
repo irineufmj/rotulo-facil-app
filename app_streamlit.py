@@ -125,80 +125,86 @@ if not st.session_state.logged_in:
         
         if auth_mode == "Entrar":
             st.markdown("### 🔑 Entrar no Sistema")
-            login_user = st.text_input("Usuário:", placeholder="Digite seu nome de usuário", key="login_username_field")
-            login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
-            
-            if st.button("Acessar Painel", type="primary", use_container_width=True):
-                success, result, is_admin = authenticate_user(login_user, login_pass, db_lock)
-                if success:
-                    st.session_state.logged_in = True
-                    st.session_state.username = result
-                    st.session_state.is_admin = is_admin
-                    st.toast(f"Bem-vindo de volta, {result}!")
-                    st.rerun()
-                else:
-                    st.error(result)
+            with st.form("form_login_usuario"):
+                login_user = st.text_input("Usuário:", placeholder="Digite seu nome de usuário", key="login_username_field")
+                login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
+                
+                submit_login = st.form_submit_button("Acessar Painel", type="primary", use_container_width=True)
+                if submit_login:
+                    success, result, is_admin = authenticate_user(login_user, login_pass, db_lock)
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.username = result
+                        st.session_state.is_admin = is_admin
+                        st.toast(f"Bem-vindo de volta, {result}!")
+                        st.rerun()
+                    else:
+                        st.error(result)
                     
         elif auth_mode == "Esqueci minha senha":
             st.markdown("### 🔓 Recuperação de Senha")
             st.info("Para redefinir sua senha, informe o e-mail cadastrado na sua conta. Você receberá uma senha temporária.")
-            rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
-            
-            if st.button("Enviar E-mail de Recuperação", type="primary", use_container_width=True):
-                if not rec_email:
-                    st.error("Preencha o campo de e-mail para recuperar a senha.")
-                else:
-                    with st.spinner("Enviando e-mail..."):
-                        success, msg = recover_password_email(rec_email, db_lock)
-                    if success:
-                        st.success(msg)
+            with st.form("form_recuperar_senha"):
+                rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
+                
+                submit_rec = st.form_submit_button("Enviar E-mail de Recuperação", type="primary", use_container_width=True)
+                if submit_rec:
+                    if not rec_email:
+                        st.error("Preencha o campo de e-mail para recuperar a senha.")
                     else:
-                        st.error(msg)
+                        with st.spinner("Enviando e-mail..."):
+                            success, msg = recover_password_email(rec_email, db_lock)
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
                     
         else: # Criar Nova Conta
             st.markdown("### 📝 Criar Nova Conta")
-            new_user = st.text_input("Nome de Usuário:", placeholder="Escolha um nome de usuário", key="reg_username_field")
-            new_email = st.text_input("E-mail:", placeholder="Ex: usuario@email.com", key="reg_email_field")
-            new_cpf = st.text_input("CPF:", placeholder="Ex: 000.000.000-00", key="reg_cpf_field")
-            new_pass = st.text_input("Senha:", type="password", placeholder="Mínimo de 4 caracteres", key="reg_password_field")
-            new_pass_confirm = st.text_input("Confirme a Senha:", type="password", placeholder="Repita a senha anterior", key="reg_password_confirm_field")
-            
-            st.markdown("##### 🛡️ Termos de Uso e Política de Privacidade (LGPD)")
-            with st.expander("Clique para ler os Termos de Uso e Política de Privacidade completos"):
-                st.markdown("""
-                **TERMO DE CONSENTIMENTO E PRIVACIDADE (LGPD)**
+            with st.form("form_registro_usuario"):
+                new_user = st.text_input("Nome de Usuário:", placeholder="Escolha um nome de usuário", key="reg_username_field")
+                new_email = st.text_input("E-mail:", placeholder="Ex: usuario@email.com", key="reg_email_field")
+                new_cpf = st.text_input("CPF:", placeholder="Ex: 000.000.000-00", key="reg_cpf_field")
+                new_pass = st.text_input("Senha:", type="password", placeholder="Mínimo de 4 caracteres", key="reg_password_field")
+                new_pass_confirm = st.text_input("Confirme a Senha:", type="password", placeholder="Repita a senha anterior", key="reg_password_confirm_field")
                 
-                De acordo com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018), este termo informa como tratamos suas informações:
+                st.markdown("##### 🛡️ Termos de Uso e Política de Privacidade (LGPD)")
+                with st.expander("Clique para ler os Termos de Uso e Política de Privacidade completos"):
+                    st.markdown("""
+                    **TERMO DE CONSENTIMENTO E PRIVACIDADE (LGPD)**
+                    
+                    De acordo com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018), este termo informa como tratamos suas informações:
+                    
+                    1. **Quais dados coletamos:** Coletamos seu nome de usuário, e-mail e CPF para fins de identificação, controle de unicidade, conformidade legal e segurança, além do hash criptografado da sua senha. Coletamos também as receitas, ingredientes e parametrizações que você salvar.
+                    2. **Finalidade:** O tratamento desses dados tem como única e exclusiva finalidade permitir que você gerencie, edite, exclua e visualize suas próprias receitas de forma privada, evitando contas duplicadas ou fantasmas.
+                    3. **Armazenamento e Compartilhamento:** Seus dados são salvos localmente no arquivo de dados do aplicativo. Não compartilhamos, vendemos ou divulgamos suas receitas ou credenciais para terceiros em hipótese alguma.
+                    4. **Exclusão de Dados:** Você é proprietário dos seus dados. A exclusão de uma receita pode ser feita diretamente por você. Para exclusão total da conta e de todas as suas receitas, entre em contato com o administrador.
+                    5. **Segurança:** As senhas são protegidas por criptografia de mão única (SHA-256) combinadas com um salt aleatório para evitar acessos não autorizados.
+                    
+                    Ao assinalar a caixa abaixo, você declara que compreende e aceita livremente os termos deste tratamento de dados.
+                    """)
                 
-                1. **Quais dados coletamos:** Coletamos seu nome de usuário, e-mail e CPF para fins de identificação, controle de unicidade, conformidade legal e segurança, além do hash criptografado da sua senha. Coletamos também as receitas, ingredientes e parametrizações que você salvar.
-                2. **Finalidade:** O tratamento desses dados tem como única e exclusiva finalidade permitir que você gerencie, edite, exclua e visualize suas próprias receitas de forma privada, evitando contas duplicadas ou fantasmas.
-                3. **Armazenamento e Compartilhamento:** Seus dados são salvos localmente no arquivo de dados do aplicativo. Não compartilhamos, vendemos ou divulgamos suas receitas ou credenciais para terceiros em hipótese alguma.
-                4. **Exclusão de Dados:** Você é proprietário dos seus dados. A exclusão de uma receita pode ser feita diretamente por você. Para exclusão total da conta e de todas as suas receitas, entre em contato com o administrador.
-                5. **Segurança:** As senhas são protegidas por criptografia de mão única (SHA-256) combinadas com um salt aleatório para evitar acessos não autorizados.
+                lgpd_accept = st.checkbox("Li e concordo com os Termos de Uso e Política de Privacidade de acordo com a LGPD.", key="lgpd_checkbox")
                 
-                Ao assinalar a caixa abaixo, você declara que compreende e aceita livremente os termos deste tratamento de dados.
-                """)
-            
-            lgpd_accept = st.checkbox("Li e concordo com os Termos de Uso e Política de Privacidade de acordo com a LGPD.", key="lgpd_checkbox")
-            
-            if st.button("Cadastrar e Acessar", type="primary", use_container_width=True):
-                if not new_user.strip() or not new_email.strip() or not new_cpf.strip() or not new_pass or not new_pass_confirm:
-                    st.error("Por favor, preencha todos os campos do cadastro.")
-                elif new_pass != new_pass_confirm:
-                    st.error("As senhas digitadas não coincidem.")
-                elif not lgpd_accept:
-                    st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
-                else:
-                    success, msg = register_user(new_user, new_email, new_cpf, new_pass, lgpd_accept, db_lock)
-                    if success:
-                        st.session_state.logged_in = True
-                        st.session_state.username = new_user.strip()
-                        st.session_state.is_admin = False
-                        st.success(msg)
-                        st.toast(f"Conta criada! Bem-vindo, {new_user.strip()}!")
-                        st.rerun()
+                submit_register = st.form_submit_button("Cadastrar e Acessar", type="primary", use_container_width=True)
+                if submit_register:
+                    if not new_user.strip() or not new_email.strip() or not new_cpf.strip() or not new_pass or not new_pass_confirm:
+                        st.error("Por favor, preencha todos os campos do cadastro.")
+                    elif new_pass != new_pass_confirm:
+                        st.error("As senhas digitadas não coincidem.")
+                    elif not lgpd_accept:
+                        st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
                     else:
-                        st.error(msg)
+                        success, msg = register_user(new_user, new_email, new_cpf, new_pass, lgpd_accept, db_lock)
+                        if success:
+                            st.session_state.logged_in = True
+                            st.session_state.username = new_user.strip()
+                            st.session_state.is_admin = False
+                            st.success(msg)
+                            st.toast(f"Conta criada! Bem-vindo, {new_user.strip()}!")
+                            st.rerun()
+                        else:
+                            st.error(msg)
     st.stop()
 
 # Sidebar do Usuário Conectado
