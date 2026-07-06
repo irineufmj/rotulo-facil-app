@@ -205,6 +205,16 @@ if not st.session_state.logged_in:
 with st.sidebar:
     st.markdown("### 👤 Usuário Conectado")
     st.markdown(f"Conectado como: **{st.session_state.username}**")
+    
+    # Exibição do Saldo
+    all_users_side = load_users(db_lock)
+    current_user_side = next((u for u in all_users_side if u["username"].lower() == st.session_state.username.lower()), None)
+    if st.session_state.get("is_admin", False):
+        st.markdown("💳 **Balance: Ilimitado (Admin)**")
+    else:
+        creditos_side = current_user_side.get("creditos_disponiveis", 0) if current_user_side else 0
+        st.markdown(f"💳 **Balance: {creditos_side} créditos disponíveis**")
+        
     if st.session_state.get("is_admin", False):
         st.markdown("🛡️ **Acesso Administrador**")
     if st.button("🚪 Sair da Conta", type="secondary", use_container_width=True):
@@ -1003,15 +1013,36 @@ with tab_app:
 
             pdf_data = create_pdf()
             
+            # Checagem de créditos para liberação do PDF
+            all_users_pdf = load_users(db_lock)
+            current_user_pdf = next((u for u in all_users_pdf if u["username"].lower() == st.session_state.username.lower()), None)
+            is_admin_pdf = current_user_pdf.get("is_admin", False) if current_user_pdf else False
+            creditos_disponiveis = current_user_pdf.get("creditos_disponiveis", 0) if current_user_pdf else 0
+            
             col_pdf, col_save = st.columns(2)
             with col_pdf:
-                st.download_button(
-                    label="📥 Gerar e Baixar PDF",
-                    data=pdf_data,
-                    file_name="rotulo_nutricional.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+                if not is_admin_pdf and creditos_disponiveis <= 0:
+                    st.warning("Você não possui créditos de impressão disponíveis. Adquira um pacote abaixo para liberar o download do seu PDF oficial.")
+                    st.link_button("💳 Adquirir Créditos de Rótulos", "https://www.mercadopago.com.br", type="primary", use_container_width=True)
+                else:
+                    def consumir_credito():
+                        with db_lock:
+                            users_list = load_users(db_lock)
+                            for u in users_list:
+                                if u["username"].lower() == st.session_state.username.lower():
+                                    if not u.get("is_admin", False):
+                                        u["creditos_disponiveis"] = max(0, u.get("creditos_disponiveis", 0) - 1)
+                                        from utils.auth import save_users
+                                        save_users(users_list, db_lock)
+                                        
+                    st.download_button(
+                        label="📥 Gerar e Baixar PDF",
+                        data=pdf_data,
+                        file_name="rotulo_nutricional.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        on_click=consumir_credito
+                    )
             with col_save:
                 if st.button("💾 Salvar Receita", type="secondary", use_container_width=True):
                     save_recipe_dialog()
@@ -1289,6 +1320,7 @@ if is_admin:
                 "E-mail": u.get("email", "N/A"),
                 "CPF": format_cpf(u.get("cpf", "N/A")),
                 "Administrador": "Sim" if u.get("is_admin", False) else "Não",
+                "Créditos": u.get("creditos_disponiveis", 0),
                 "Aceite LGPD": u.get("lgpd_accepted_at", "N/A")
             })
             
@@ -1312,6 +1344,7 @@ if is_admin:
                         edit_cpf = st.text_input("CPF:", value=format_cpf(user_data.get("cpf", "")))
                         edit_pass = st.text_input("Nova Senha (deixe em branco para manter a atual):", type="password")
                         edit_is_admin = st.checkbox("Privilégios de Administrador", value=user_data.get("is_admin", False))
+                        edit_credits = st.number_input("Créditos Disponíveis:", min_value=0, value=int(user_data.get("creditos_disponiveis", 0)), step=1)
                         
                         submit_edit = st.form_submit_button("Confirmar Alterações", type="primary")
                         if submit_edit:
@@ -1320,8 +1353,10 @@ if is_admin:
                                 edit_name, 
                                 edit_email, 
                                 edit_cpf, 
+                                db_lock,
                                 edit_pass if edit_pass.strip() else None, 
-                                edit_is_admin
+                                edit_is_admin,
+                                edit_credits
                             )
                             if success:
                                 st.success(msg)
@@ -1337,15 +1372,13 @@ if is_admin:
                 create_cpf = st.text_input("CPF:", placeholder="Ex: 123.456.789-00")
                 create_pass = st.text_input("Senha:", type="password", placeholder="Mínimo 4 caracteres")
                 create_is_admin = st.checkbox("Privilégios de Administrador")
+                create_credits = st.number_input("Créditos Iniciais:", min_value=0, value=1, step=1)
                 
                 submit_create = st.form_submit_button("Cadastrar Usuário", type="primary")
                 if submit_create:
-                    # Chamar register_user que já faz todas as validações (passando True para LGPD pois é feito pelo admin)
                     success, msg = register_user(create_name, create_email, create_cpf, create_pass, lgpd_accepted=True, db_lock=db_lock)
                     if success:
-                        # Se admin flag foi marcada, atualizamos o usuário criado
-                        if create_is_admin:
-                            admin_update_user(create_name, create_name, create_email, create_cpf, db_lock, None, is_admin_val=True)
+                        admin_update_user(create_name, create_name, create_email, create_cpf, db_lock, None, is_admin_val=create_is_admin, creditos_val=create_credits)
                         st.success(f"Usuário '{create_name}' cadastrado com sucesso!")
                         st.rerun()
                     else:

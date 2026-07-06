@@ -82,6 +82,24 @@ def load_users(db_lock):
                 logger.error(f"Erro ao carregar usuários: {e}", exc_info=True)
                 st.error(f"Erro ao carregar usuários: {e}")
                 
+        # Migração / Sanitização: Garantir creditos_disponiveis e transacoes_processadas
+        migrated = False
+        for u in users:
+            if "fim_acesso" in u:
+                del u["fim_acesso"]
+                migrated = True
+            if "status_assinatura" in u:
+                del u["status_assinatura"]
+                migrated = True
+            if "creditos_disponiveis" not in u:
+                u["creditos_disponiveis"] = 9999 if u.get("is_admin", False) else 1
+                migrated = True
+            if "transacoes_processadas" not in u:
+                u["transacoes_processadas"] = []
+                migrated = True
+        if migrated:
+            safe_save_json(USERS_JSON_PATH, users)
+                
         has_admin = any(u.get("is_admin", False) for u in users)
         if not has_admin:
             admin_pwd = get_default_admin_password()
@@ -91,6 +109,8 @@ def load_users(db_lock):
                 "cpf": "00000000000",
                 "password_hash": hash_password(admin_pwd),
                 "is_admin": True,
+                "creditos_disponiveis": 9999,
+                "transacoes_processadas": [],
                 "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "lgpd_version": "1.0"
             }
@@ -168,6 +188,8 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
         "cpf": cpf_digits,
         "password_hash": hash_password(password),
         "is_admin": False,
+        "creditos_disponiveis": 1,
+        "transacoes_processadas": [],
         "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         "lgpd_version": "1.0"
     }
@@ -233,7 +255,7 @@ def admin_delete_user(username_to_delete, db_lock):
             
         return False, "Erro ao atualizar banco de dados de usuários."
 
-def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, new_password=None, is_admin_val=False):
+def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, new_password=None, is_admin_val=False, creditos_val=None):
     old_clean = old_username.strip().lower()
     new_username_clean = new_username.strip()
     new_email_clean = new_email.strip()
@@ -271,6 +293,8 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
                 u["email"] = new_email_clean
                 u["cpf"] = new_cpf_digits
                 u["is_admin"] = is_admin_val
+                if creditos_val is not None:
+                    u["creditos_disponiveis"] = int(creditos_val)
                 if new_password:
                     if len(new_password) < 8:
                         return False, "A senha deve conter pelo menos 8 caracteres."
