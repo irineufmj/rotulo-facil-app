@@ -240,6 +240,12 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
 
+# --- SUCESSO NO PAGAMENTO MERCADO PAGO ---
+if st.query_params.get("status") == "approved":
+    st.success("🎉 **Pagamento Aprovado com Sucesso!** Seus créditos foram adicionados à sua conta.")
+    st.balloons()
+    st.query_params.clear()
+
 # --- TABS PRINCIPAIS ---
 tab_titles = [
     "📋 Calculadora & Rótulo ANVISA", 
@@ -1033,8 +1039,36 @@ with tab_app:
             col_pdf, col_save = st.columns(2)
             with col_pdf:
                 if not is_admin_pdf and creditos_disponiveis <= 0:
-                    st.warning("Você não possui créditos de impressão disponíveis. Adquira um pacote abaixo para liberar o download do seu PDF oficial.")
-                    st.link_button("💳 Adquirir Créditos de Rótulos", "https://www.mercadopago.com.br", type="primary", use_container_width=True)
+                    st.warning("Você não possui créditos de impressão disponíveis. Adquira um pacote de créditos para liberar o download do seu PDF oficial:")
+                    packages = [
+                        {"credits": 5, "price": 49.90, "name": "Bronze (5 créd.)"},
+                        {"credits": 15, "price": 99.90, "name": "Prata (15 créd.)"},
+                        {"credits": 50, "price": 249.90, "name": "Ouro (50 créd.)"}
+                    ]
+                    access_token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN", "")
+                    back_url = st.secrets.get("APP_BASE_URL", "https://rotulo-facil-app.streamlit.app/")
+                    from utils.webhook_handler import create_mercado_pago_preference
+                    selected_pkg = st.selectbox(
+                        "Selecione um pacote de créditos:",
+                        options=packages,
+                        format_func=lambda x: f"{x['name']} - R$ {x['price']:.2f}",
+                        key="pdf_buy_credits_select"
+                    )
+                    if not access_token:
+                        st.error("Mercado Pago não está configurado.")
+                    else:
+                        init_point = create_mercado_pago_preference(
+                            username=st.session_state.username,
+                            email=current_user_pdf.get("email", "") if current_user_pdf else "",
+                            credits=selected_pkg['credits'],
+                            price=selected_pkg['price'],
+                            access_token=access_token,
+                            back_url=back_url
+                        )
+                        if init_point:
+                            st.link_button(f"💳 Comprar (R$ {selected_pkg['price']:.2f})", init_point, type="primary", use_container_width=True)
+                        else:
+                            st.error("Erro ao gerar link de pagamento.")
                 else:
                     def consumir_credito():
                         with db_lock:
@@ -1325,6 +1359,51 @@ with tab_perfil:
                         st.success('Perfil atualizado com sucesso!')
                     else:
                         st.error(msg)
+        
+        # --- SEÇÃO DE COMPRA DE CRÉDITOS NO PERFIL ---
+        st.markdown("---")
+        st.markdown("### 💳 Comprar Créditos de Rótulos")
+        st.markdown("Adquira créditos para liberar a exportação de novos PDFs oficiais de tabelas nutricionais.")
+        
+        col1, col2, col3 = st.columns(3)
+        packages = [
+            {"credits": 5, "price": 49.90, "name": "Bronze", "desc": "Ideal para pequenos produtores"},
+            {"credits": 15, "price": 99.90, "name": "Prata", "desc": "Recomendado - Melhor custo-benefício"},
+            {"credits": 50, "price": 249.90, "name": "Ouro", "desc": "Para indústrias e consultores de alimentos"}
+        ]
+        
+        access_token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN", "")
+        back_url = st.secrets.get("APP_BASE_URL", "https://rotulo-facil-app.streamlit.app/")
+        
+        from utils.webhook_handler import create_mercado_pago_preference
+        
+        for idx, col in enumerate([col1, col2, col3]):
+            pkg = packages[idx]
+            with col:
+                st.markdown(f"""
+                <div style="background: rgba(255, 255, 255, 0.85); border: 2px solid #059669; border-radius: 12px; padding: 15px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 10px;">
+                    <h4 style="margin: 0; color: #111827;">Pacote {pkg['name']}</h4>
+                    <h2 style="color: #059669; margin: 10px 0; font-size: 1.8rem;">{pkg['credits']} Créditos</h2>
+                    <p style="font-size: 1.2rem; font-weight: bold; margin: 5px 0; color: #374151;">R$ {pkg['price']:.2f}</p>
+                    <p style="font-size: 0.8rem; color: #6B7280; min-height: 35px; line-height: 1.2;">{pkg['desc']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if not access_token:
+                    st.warning("Mercado Pago não configurado.")
+                else:
+                    init_point = create_mercado_pago_preference(
+                        username=current_username,
+                        email=user_data.get("email", ""),
+                        credits=pkg['credits'],
+                        price=pkg['price'],
+                        access_token=access_token,
+                        back_url=back_url
+                    )
+                    if init_point:
+                        st.link_button(f"Comprar {pkg['name']}", init_point, type="primary", use_container_width=True)
+                    else:
+                        st.error("Erro no checkout.")
     else:
         st.error('Não foi possível carregar os dados do seu perfil.')
 

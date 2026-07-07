@@ -20,8 +20,36 @@ app = FastAPI(title="Rotulei App - Webhook API")
 # Lock para sincronização de concorrência com o arquivo JSON
 db_lock = threading.RLock()
 
-# Defina seu ACCESS_TOKEN do Mercado Pago nas variáveis de ambiente ou substitua aqui
-MERCADO_PAGO_ACCESS_TOKEN = "TEST-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+def get_mercado_pago_access_token():
+    import os
+    import re
+    # 1. Environment Variable
+    token = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
+    if token:
+        return token
+    # 2. .streamlit/secrets.toml
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
+        if os.path.exists(secrets_path):
+            with open(secrets_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            match = re.search(r'MERCADOPAGO_ACCESS_TOKEN\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    # 3. Streamlit secrets (if available)
+    try:
+        import streamlit as st
+        token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN")
+        if token:
+            return token
+    except Exception:
+        pass
+    return "TEST-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+
+MERCADO_PAGO_ACCESS_TOKEN = get_mercado_pago_access_token()
 
 @app.post("/webhooks/mercadopago")
 async def mercado_pago_webhook(request: Request):

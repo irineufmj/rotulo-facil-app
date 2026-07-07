@@ -146,3 +146,43 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
             return True, f"Sucesso: Adicionados {credits_to_add} créditos para o usuário '{user_found['username']}'."
         else:
             return False, "Erro ao salvar alterações no banco de dados de usuários."
+
+def create_mercado_pago_preference(username: str, email: str, credits: int, price: float, access_token: str, back_url: str) -> str:
+    """
+    Cria uma preferência de pagamento no Mercado Pago usando o SDK oficial
+    e retorna o init_point (link de checkout).
+    """
+    try:
+        import mercadopago
+        sdk = mercadopago.SDK(access_token)
+        
+        # O payer email deve ser o e-mail real do usuário ou o e-mail/username
+        payer_email = email.strip() if (email and "@" in email) else f"{username}@rotulofacil.com"
+        
+        preference_data = {
+            "items": [
+                {
+                    "title": f"Pacote de {credits} Créditos - Rotulei App",
+                    "quantity": 1,
+                    "unit_price": float(price),
+                    "currency_id": "BRL"
+                }
+            ],
+            "payer": {
+                "email": payer_email
+            },
+            "external_reference": f"{username}:{credits}",
+            "back_urls": {
+                "success": back_url,
+                "failure": back_url,
+                "pending": back_url
+            },
+            "auto_return": "approved"
+        }
+        
+        preference_response = sdk.preference().create(preference_data)
+        preference = preference_response.get("response", {})
+        return preference.get("init_point")
+    except Exception as e:
+        logger.error(f"Erro ao criar preferência do Mercado Pago: {e}", exc_info=True)
+        return None
