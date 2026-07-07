@@ -119,26 +119,7 @@ if not st.session_state.logged_in:
     col_left, col_center, col_right = st.columns([1, 1.2, 1])
     
     with col_center:
-        # Bloco temporário de depuração de banco de dados
-        from utils.db import is_sql_configured
-        st.write(f"🔍 **Debug DB:** SQL ativo? `{is_sql_configured()}`")
-        try:
-            st.write(f"🔑 **Secrets carregados:** `{list(st.secrets.keys())}`")
-            if "connections" in st.secrets:
-                st.write(f"🔗 **Conexões:** `{list(st.secrets['connections'].keys())}`")
-                # Tenta testar a conexão diretamente e mostrar o resultado
-                try:
-                    from sqlalchemy import text
-                    conn = st.connection("sql")
-                    with conn.session as s:
-                        s.execute(text("SELECT 1"))
-                    st.success("✅ Conexão com banco relacional testada e funcionando!")
-                except Exception as db_err:
-                    st.error(f"❌ Falha de teste de conexão SQL: {db_err}")
-        except Exception as sec_err:
-            st.write(f"⚠️ Erro ao ler secrets: {sec_err}")
-
-        # Verifica se há erros gravados no arquivo de log do banco de dados
+        # Verifica se há erros gravados no arquivo de log do banco de dados (invisível em produção se não houver erros)
         error_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_error.log")
         if os.path.exists(error_log_path):
             try:
@@ -152,8 +133,6 @@ if not st.session_state.logged_in:
                     st.rerun()
             except Exception as read_err:
                 st.write(f"Erro ao ler log de erro: {read_err}")
-
-        st.write("---")
 
         auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta", "Esqueci minha senha"], horizontal=True, label_visibility="collapsed")
         
