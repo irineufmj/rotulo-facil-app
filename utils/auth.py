@@ -14,6 +14,8 @@ from utils.data_loader import load_saved_recipes, safe_save_json, RECIPES_JSON_P
 
 logger = logging.getLogger(__name__)
 
+EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USERS_JSON_PATH = os.path.join(BASE_DIR, "usuarios.json")
 
@@ -214,7 +216,6 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
     if not username_clean:
         return False, "O nome de usuário não pode ser vazio."
         
-    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
     if not EMAIL_RE.match(email_clean):
         return False, "Por favor, informe um endereço de e-mail válido."
         
@@ -315,7 +316,6 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
     if not new_username_clean:
         return False, "O nome de usuário não pode ser vazio."
         
-    EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$')
     if not EMAIL_RE.match(new_email_clean):
         return False, "Por favor, informe um endereço de e-mail válido."
         
