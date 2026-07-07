@@ -77,6 +77,8 @@ def load_users(db_lock):
     from utils.db import is_sql_configured, load_users_sql, save_users_sql
     if is_sql_configured():
         users = load_users_sql(db_lock)
+        if users is None:
+            raise ConnectionError("Falha na conexão com o banco de dados. Operação abortada para segurança dos dados.")
         
         # Migração automática: Se o banco SQL tiver apenas o admin (ou estiver vazio) e existir o arquivo local JSON com usuários,
         # migramos os usuários locais para o banco SQL.

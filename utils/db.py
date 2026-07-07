@@ -109,7 +109,7 @@ def load_users_sql(db_lock) -> list:
             logger.error(f"Erro ao carregar usuários do banco SQL: {e}", exc_info=True)
             log_db_error("load_users_sql_error", e)
             st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
-            return []
+            return None
 
 def save_users_sql(users: list, db_lock) -> bool:
     """
@@ -119,13 +119,33 @@ def save_users_sql(users: list, db_lock) -> bool:
         try:
             conn = st.connection("sql")
             with conn.session as session:
-                session.execute(text("DELETE FROM usuarios"))
+                # 1. Deletar apenas os usuários que não estão na nova lista (evita limpar o banco inteiro)
+                usernames = [u["username"] for u in users]
+                if usernames:
+                    session.execute(
+                        text("DELETE FROM usuarios WHERE LOWER(username) NOT IN (:usernames)"),
+                        {"usernames": tuple(u.lower() for u in usernames)}
+                    )
+                else:
+                    session.execute(text("DELETE FROM usuarios"))
+                
+                # 2. Inserir ou atualizar os usuários existentes (UPSERT)
                 for u in users:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
                     session.execute(
                         text("""
                         INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version)
                         VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version)
+                        ON CONFLICT (username) DO UPDATE SET
+                            email = EXCLUDED.email,
+                            cpf = EXCLUDED.cpf,
+                            password_hash = EXCLUDED.password_hash,
+                            is_admin = EXCLUDED.is_admin,
+                            creditos_disponiveis = EXCLUDED.creditos_disponiveis,
+                            transacoes_processadas = EXCLUDED.transacoes_processadas,
+                            id_transacao_pagamento = EXCLUDED.id_transacao_pagamento,
+                            lgpd_accepted_at = EXCLUDED.lgpd_accepted_at,
+                            lgpd_version = EXCLUDED.lgpd_version
                         """),
                         {
                             "username": u["username"],
