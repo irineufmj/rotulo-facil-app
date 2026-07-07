@@ -1062,22 +1062,19 @@ with tab_app:
                     st.markdown("---")
                     st.markdown("##### Salvar Receita Atual")
                     name = st.text_input("Nome da Receita:", placeholder="Ex: Bolo de Cenoura", key="new_recipe_name")
-                    col_save_btn, col_cancel_btn = st.columns(2)
-                    with col_save_btn:
-                        if st.button("Salvar", type="primary", use_container_width=True):
-                            if name.strip():
-                                if save_recipe(name.strip(), db_lock):
-                                    st.toast(f"Receita '{name.strip()}' salva com sucesso!")
-                                    st.session_state.show_save_dialog = False
-                                    st.rerun()
-                                else:
-                                    st.error("Erro ao gravar receita no banco.")
+                    if st.button("Confirmar e Salvar", type="primary", use_container_width=True):
+                        if name.strip():
+                            if save_recipe(name.strip(), db_lock):
+                                st.toast(f"Receita '{name.strip()}' salva com sucesso!")
+                                st.session_state.show_save_dialog = False
+                                st.rerun()
                             else:
-                                st.error("Digite um nome.")
-                    with col_cancel_btn:
-                        if st.button("Cancelar", type="secondary", use_container_width=True):
-                            st.session_state.show_save_dialog = False
-                            st.rerun()
+                                st.error("Erro ao gravar receita no banco.")
+                        else:
+                            st.error("Por favor, digite um nome para a receita.")
+                    if st.button("Cancelar", type="secondary", use_container_width=True):
+                        st.session_state.show_save_dialog = False
+                        st.rerun()
                     
     elif len(st.session_state.recipe) > 0:
         with col_label:
