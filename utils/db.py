@@ -68,6 +68,7 @@ def init_db():
             session.commit()
     except Exception as e:
         logger.error(f"Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
+        st.error(f"Erro de Conexão com o Banco de Dados (init_db): {e}")
 
 # Inicializar tabelas em tempo de import
 init_db()
@@ -96,6 +97,7 @@ def load_users_sql(db_lock) -> list:
             return users
         except Exception as e:
             logger.error(f"Erro ao carregar usuários do banco SQL: {e}", exc_info=True)
+            st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
             return []
 
 def save_users_sql(users: list, db_lock) -> bool:
@@ -131,6 +133,7 @@ def save_users_sql(users: list, db_lock) -> bool:
             return True
         except Exception as e:
             logger.error(f"Erro ao gravar usuários no banco SQL: {e}", exc_info=True)
+            st.error(f"Erro de Banco de Dados (save_users_sql): {e}")
             return False
 
 def load_recipes_sql(db_lock) -> list:
