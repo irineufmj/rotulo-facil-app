@@ -68,6 +68,10 @@ def load_unified_data():
     return foods
 
 def load_saved_recipes(db_lock):
+    from utils.db import is_sql_configured, load_recipes_sql
+    if is_sql_configured():
+        return load_recipes_sql(db_lock)
+        
     with db_lock:
         if not os.path.exists(RECIPES_JSON_PATH):
             return []
@@ -80,27 +84,31 @@ def load_saved_recipes(db_lock):
             return []
 
 def save_recipe(name, db_lock):
+    username = st.session_state.get("username", "")
+    new_recipe = {
+        "nome": name,
+        "username": username,
+        "nome_produto": st.session_state.get("nome_produto", ""),
+        "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
+        "ingredients": st.session_state.recipe,
+        "weight_final": st.session_state.weight_final,
+        "portion_size": st.session_state.portion_size,
+        "case_measure": st.session_state.case_measure,
+        "gluten_opt": st.session_state.gluten_opt,
+        "lactose_opt": st.session_state.lactose_opt,
+        "allergens_direct": st.session_state.allergens_direct,
+        "allergens_deriv": st.session_state.allergens_deriv,
+        "allergens_may_contain": st.session_state.allergens_may_contain,
+        "product_type": st.session_state.product_type,
+        "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    from utils.db import is_sql_configured, save_recipe_sql
+    if is_sql_configured():
+        return save_recipe_sql(name, new_recipe, db_lock)
+
     with db_lock:
         recipes = load_saved_recipes(db_lock)
-        username = st.session_state.get("username", "")
-        new_recipe = {
-            "nome": name,
-            "username": username,
-            "nome_produto": st.session_state.get("nome_produto", ""),
-            "peso_embalagem": float(st.session_state.get("peso_embalagem", 0.0)),
-            "ingredients": st.session_state.recipe,
-            "weight_final": st.session_state.weight_final,
-            "portion_size": st.session_state.portion_size,
-            "case_measure": st.session_state.case_measure,
-            "gluten_opt": st.session_state.gluten_opt,
-            "lactose_opt": st.session_state.lactose_opt,
-            "allergens_direct": st.session_state.allergens_direct,
-            "allergens_deriv": st.session_state.allergens_deriv,
-            "allergens_may_contain": st.session_state.allergens_may_contain,
-            "product_type": st.session_state.product_type,
-            "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
         existing_idx = -1
         for idx, r in enumerate(recipes):
             recipe_username = r.get("username", "")
@@ -116,9 +124,13 @@ def save_recipe(name, db_lock):
         return safe_save_json(RECIPES_JSON_PATH, recipes)
 
 def delete_recipe(name, db_lock):
+    username = st.session_state.get("username", "")
+    from utils.db import is_sql_configured, delete_recipe_sql
+    if is_sql_configured():
+        return delete_recipe_sql(name, username, db_lock)
+
     with db_lock:
         recipes = load_saved_recipes(db_lock)
-        username = st.session_state.get("username", "")
         recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
         return safe_save_json(RECIPES_JSON_PATH, recipes)
 

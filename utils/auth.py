@@ -72,6 +72,34 @@ def validate_cpf(cpf_str):
     return True
 
 def load_users(db_lock):
+    from utils.db import is_sql_configured, load_users_sql, save_users_sql
+    if is_sql_configured():
+        users = load_users_sql(db_lock)
+        has_admin = any(u.get("is_admin", False) for u in users)
+        if not has_admin:
+            admin_pwd = get_default_admin_password()
+            default_admin = {
+                "username": "admin",
+                "email": "admin@rotulofacil.com",
+                "cpf": "00000000000",
+                "password_hash": hash_password(admin_pwd),
+                "is_admin": True,
+                "creditos_disponiveis": 9999,
+                "transacoes_processadas": [],
+                "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "lgpd_version": "1.0"
+            }
+            admin_exists = any(u["username"].lower() == "admin" for u in users)
+            if not admin_exists:
+                users.append(default_admin)
+            else:
+                for u in users:
+                    if u["username"].lower() == "admin":
+                        u["is_admin"] = True
+                        break
+            save_users_sql(users, db_lock)
+        return users
+
     with db_lock:
         users = []
         if os.path.exists(USERS_JSON_PATH):
@@ -127,6 +155,9 @@ def load_users(db_lock):
         return users
 
 def save_users(users, db_lock):
+    from utils.db import is_sql_configured, save_users_sql
+    if is_sql_configured():
+        return save_users_sql(users, db_lock)
     with db_lock:
         return safe_save_json(USERS_JSON_PATH, users)
 

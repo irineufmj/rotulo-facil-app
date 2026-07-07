@@ -1,3 +1,5 @@
 streamlit
 pandas
 reportlab
+SQLAlchemy
+psycopg2-binary
