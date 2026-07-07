@@ -32,7 +32,7 @@ RECIPES_JSON_PATH = os.path.join(BASE_DIR, "receitas_salvas.json")
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Rotuladora Nutricional ANVISA | TBCA & TACO",
+    page_title="Rotulei App | Rotulagem ANVISA & TBCA + TACO",
     page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -112,7 +112,7 @@ def save_recipe_dialog():
 # --- LOGIN / CADASTRO FLOW ---
 if not st.session_state.logged_in:
     # Cabeçalho da página de acesso
-    st.markdown('<h1 class="main-title" style="text-align: center;">📋 Rótulo Fácil - Login</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title" style="text-align: center;">📋 Rotulei App - Login</h1>', unsafe_allow_html=True)
     st.markdown('<p class="subtitle" style="text-align: center;">Gerador de Rótulos ANVISA em conformidade com as normas e dados unificados TBCA + TACO.</p>', unsafe_allow_html=True)
     
     # Criar uma caixa centralizada com colunas
@@ -259,7 +259,7 @@ if is_admin:
 # ==============================================================================
 with tab_app:
     # Cabeçalho do App
-    st.markdown('<h1 class="main-title">📋 Rotuladora Nutricional ANVISA</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">📋 Rotulei App - ANVISA</h1>', unsafe_allow_html=True)
     st.markdown('<p class="subtitle">Buscador unificado TBCA + TACO, montador de receitas e gerador de rótulos de acordo com as normas ANVISA.</p>', unsafe_allow_html=True)
     
     # Grid de Layout
@@ -693,7 +693,7 @@ with tab_app:
                     lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
                     
                 lupa_container_html = f"""
-                <div style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto;">
+                <div class="watermarked-preview" style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto; position: relative;">
                     {lupa_content_html}
                 </div>
                 """

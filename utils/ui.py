@@ -111,6 +111,28 @@ def inject_custom_css():
         font-family: 'Courier New', monospace;
         font-size: 0.9rem;
     }
+    
+    /* Anti-print Watermark */
+    .anvisa-table-container, .watermarked-preview {
+        position: relative;
+        overflow: hidden;
+    }
+    .anvisa-table-container::after, .watermarked-preview::after {
+        content: "ROTULEI APP - CÓPIA PROIBIDA";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) rotate(-30deg);
+        font-family: 'Outfit', 'Inter', sans-serif;
+        font-size: 1.6rem;
+        font-weight: 900;
+        color: rgba(220, 38, 38, 0.22); /* Red red-600 with 22% opacity */
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 9999;
+        letter-spacing: 2px;
+        text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.3);
+    }
 </style>
     """, unsafe_allow_html=True)
 

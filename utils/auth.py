@@ -332,15 +332,15 @@ def send_recovery_email(to_email, username, temp_password):
         msg.set_content(f"""
 Olá {username},
 
-Você solicitou a recuperação da sua senha no Rótulo Fácil.
+Você solicitou a recuperação da sua senha no Rotulei App.
 Sua nova senha temporária é: {temp_password}
 
 Recomendamos que você faça login com essa senha e, em seguida, acesse a aba "Meu Perfil" para alterá-la para uma senha de sua preferência.
 
 Atenciosamente,
-Equipe Rótulo Fácil
+Equipe Rotulei App
 """)
-        msg["Subject"] = "Recuperação de Senha - Rótulo Fácil"
+        msg["Subject"] = "Recuperação de Senha - Rotulei App"
         msg["From"] = smtp_user
         msg["To"] = to_email
         

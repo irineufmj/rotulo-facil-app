@@ -1,7 +1,7 @@
 """
 Servidor de API Exemplo para Webhooks do Mercado Pago
 Este arquivo demonstra como expor um endpoint HTTP para receber os Webhooks do Mercado Pago
-e integrá-lo com a lógica de créditos do Rótulo Fácil.
+e integrá-lo com a lógica de créditos do Rotulei App.
 
 Como rodar localmente:
 1. Instale o FastAPI e Uvicorn:
@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from utils.webhook_handler import process_mercado_pago_webhook
 
-app = FastAPI(title="Rótulo Fácil - Webhook API")
+app = FastAPI(title="Rotulei App - Webhook API")
 
 # Lock para sincronização de concorrência com o arquivo JSON
 db_lock = threading.RLock()
@@ -51,4 +51,4 @@ async def mercado_pago_webhook(request: Request):
 
 @app.get("/")
 def read_root():
-    return {"status": "running", "info": "Rótulo Fácil Webhook Endpoint"}
+    return {"status": "running", "info": "Rotulei App Webhook Endpoint"}
