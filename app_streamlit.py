@@ -366,7 +366,7 @@ with tab_app:
             if col_mul.button("✖️ 2x", type="secondary", use_container_width=True, help="Dobrar receita"):
                 for idx, ing in enumerate(st.session_state.recipe):
                     ing["w"] *= 2.0
-                    widget_key = f"ing_w_{ing['c']}_{idx}"
+                    widget_key = f"ing_w_{idx}_{ing['c']}"
                     if widget_key in st.session_state:
                         st.session_state[widget_key] = float(ing["w"])
                 st.session_state.weight_final *= 2.0
@@ -377,7 +377,7 @@ with tab_app:
             if col_div.button("➗ 0.5x", type="secondary", use_container_width=True, help="Cortar pela metade"):
                 for idx, ing in enumerate(st.session_state.recipe):
                     ing["w"] /= 2.0
-                    widget_key = f"ing_w_{ing['c']}_{idx}"
+                    widget_key = f"ing_w_{idx}_{ing['c']}"
                     if widget_key in st.session_state:
                         st.session_state[widget_key] = float(ing["w"])
                 st.session_state.weight_final /= 2.0
