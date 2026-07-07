@@ -68,9 +68,23 @@ def load_unified_data():
     return foods
 
 def load_saved_recipes(db_lock):
-    from utils.db import is_sql_configured, load_recipes_sql
+    from utils.db import is_sql_configured, load_recipes_sql, save_recipe_sql
     if is_sql_configured():
-        return load_recipes_sql(db_lock)
+        recipes = load_recipes_sql(db_lock)
+        
+        # Migração automática: Se o banco SQL estiver vazio de receitas e existir o arquivo local JSON com receitas,
+        # migramos as receitas locais para o banco SQL.
+        if len(recipes) == 0 and os.path.exists(RECIPES_JSON_PATH):
+            try:
+                with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
+                    local_recipes = json.load(f)
+                for lr in local_recipes:
+                    save_recipe_sql(lr["nome"], lr, db_lock)
+                recipes = load_recipes_sql(db_lock)
+                logger.info("Migração automática de receitas locais para o banco SQL realizada com sucesso!")
+            except Exception as mig_err:
+                logger.error(f"Erro na migração automática de receitas para SQL: {mig_err}", exc_info=True)
+        return recipes
         
     with db_lock:
         if not os.path.exists(RECIPES_JSON_PATH):

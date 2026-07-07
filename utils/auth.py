@@ -75,6 +75,26 @@ def load_users(db_lock):
     from utils.db import is_sql_configured, load_users_sql, save_users_sql
     if is_sql_configured():
         users = load_users_sql(db_lock)
+        
+        # Migração automática: Se o banco SQL tiver apenas o admin (ou estiver vazio) e existir o arquivo local JSON com usuários,
+        # migramos os usuários locais para o banco SQL.
+        if len(users) <= 1 and os.path.exists(USERS_JSON_PATH):
+            try:
+                with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+                    local_users = json.load(f)
+                if len(local_users) > 0:
+                    db_usernames = {u["username"].lower() for u in users}
+                    migrated = False
+                    for lu in local_users:
+                        if lu["username"].lower() not in db_usernames:
+                            users.append(lu)
+                            migrated = True
+                    if migrated:
+                        save_users_sql(users, db_lock)
+                        logger.info("Migração automática de usuários locais para o banco SQL realizada com sucesso!")
+            except Exception as mig_err:
+                logger.error(f"Erro na migração automática de usuários para SQL: {mig_err}", exc_info=True)
+
         has_admin = any(u.get("is_admin", False) for u in users)
         if not has_admin:
             admin_pwd = get_default_admin_password()
