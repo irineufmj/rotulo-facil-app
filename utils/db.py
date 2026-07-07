@@ -122,9 +122,11 @@ def save_users_sql(users: list, db_lock) -> bool:
                 # 1. Deletar apenas os usuários que não estão na nova lista (evita limpar o banco inteiro)
                 usernames = [u["username"] for u in users]
                 if usernames:
+                    placeholders = ", ".join(f":u{idx}" for idx in range(len(usernames)))
+                    params = {f"u{idx}": u.lower() for idx, u in enumerate(usernames)}
                     session.execute(
-                        text("DELETE FROM usuarios WHERE LOWER(username) NOT IN (:usernames)"),
-                        {"usernames": tuple(u.lower() for u in usernames)}
+                        text(f"DELETE FROM usuarios WHERE LOWER(username) NOT IN ({placeholders})"),
+                        params
                     )
                 else:
                     session.execute(text("DELETE FROM usuarios"))
