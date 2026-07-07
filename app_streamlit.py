@@ -138,6 +138,21 @@ if not st.session_state.logged_in:
         except Exception as sec_err:
             st.write(f"⚠️ Erro ao ler secrets: {sec_err}")
 
+        # Verifica se há erros gravados no arquivo de log do banco de dados
+        error_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_error.log")
+        if os.path.exists(error_log_path):
+            try:
+                with open(error_log_path, "r", encoding="utf-8") as f:
+                    log_content = f.read()
+                st.error("🚨 **Último erro detectado no banco de dados:**")
+                with st.expander("Ver Detalhes Técnicos do Erro (Traceback)"):
+                    st.code(log_content)
+                if st.button("🧹 Limpar Log de Erro"):
+                    os.remove(error_log_path)
+                    st.rerun()
+            except Exception as read_err:
+                st.write(f"Erro ao ler log de erro: {read_err}")
+
         st.write("---")
 
         auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta", "Esqueci minha senha"], horizontal=True, label_visibility="collapsed")

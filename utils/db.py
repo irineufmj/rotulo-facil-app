@@ -1,18 +1,28 @@
 import os
 import json
 import logging
+import traceback
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
+def log_db_error(msg: str, e: Exception):
+    try:
+        filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "db_error.log")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(f"Error Message: {msg}\n")
+            f.write(f"Exception: {str(e)}\n\n")
+            f.write(traceback.format_exc())
+    except Exception as log_ex:
+        logger.error(f"Erro ao gravar log local de erro: {log_ex}")
+
 def is_sql_configured() -> bool:
     """
-    Retorna True se houver uma configuração de banco de dados SQL ativa nos secrets do Streamlit.
+    Retorna True se houver uma configuração de banco de dados SQL activa nos secrets do Streamlit.
     """
     try:
-        # Verifica se 'connections' e 'sql' estão declarados no st.secrets
         return "connections" in st.secrets and "sql" in st.secrets["connections"]
     except Exception:
         return False
@@ -20,7 +30,6 @@ def is_sql_configured() -> bool:
 def init_db():
     """
     Inicializa as tabelas do banco de dados relacional se estiver configurado.
-    Garante compatibilidade ANSI SQL (funciona em PostgreSQL, SQLite, MySQL, etc).
     """
     if not is_sql_configured():
         return
@@ -68,6 +77,7 @@ def init_db():
             session.commit()
     except Exception as e:
         logger.error(f"Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
+        log_db_error("init_db_error", e)
         st.error(f"Erro de Conexão com o Banco de Dados (init_db): {e}")
 
 # Inicializar tabelas em tempo de import
@@ -97,6 +107,7 @@ def load_users_sql(db_lock) -> list:
             return users
         except Exception as e:
             logger.error(f"Erro ao carregar usuários do banco SQL: {e}", exc_info=True)
+            log_db_error("load_users_sql_error", e)
             st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
             return []
 
@@ -133,6 +144,7 @@ def save_users_sql(users: list, db_lock) -> bool:
             return True
         except Exception as e:
             logger.error(f"Erro ao gravar usuários no banco SQL: {e}", exc_info=True)
+            log_db_error("save_users_sql_error", e)
             st.error(f"Erro de Banco de Dados (save_users_sql): {e}")
             return False
 
@@ -164,6 +176,7 @@ def load_recipes_sql(db_lock) -> list:
             return recipes
         except Exception as e:
             logger.error(f"Erro ao carregar receitas do banco SQL: {e}", exc_info=True)
+            log_db_error("load_recipes_sql_error", e)
             return []
 
 def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
@@ -175,13 +188,11 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
         try:
             conn = st.connection("sql")
             with conn.session as session:
-                # Deletar receita existente com a mesma PK (nome, username)
                 session.execute(
                     text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
                 
-                # Inserir novos dados
                 session.execute(
                     text("""
                     INSERT INTO receitas (
@@ -216,6 +227,7 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
             return True
         except Exception as e:
             logger.error(f"Erro ao salvar receita no banco SQL: {e}", exc_info=True)
+            log_db_error("save_recipe_sql_error", e)
             return False
 
 def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
@@ -234,4 +246,5 @@ def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
             return True
         except Exception as e:
             logger.error(f"Erro ao deletar receita do banco SQL: {e}", exc_info=True)
+            log_db_error("delete_recipe_sql_error", e)
             return False
