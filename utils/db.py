@@ -3,6 +3,7 @@ import json
 import logging
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def init_db():
         conn = st.connection("sql")
         with conn.session as session:
             # Tabela de Usuários
-            session.execute("""
+            session.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 username VARCHAR(255) PRIMARY KEY,
                 email VARCHAR(255),
@@ -41,10 +42,10 @@ def init_db():
                 lgpd_accepted_at VARCHAR(100),
                 lgpd_version VARCHAR(10)
             )
-            """)
+            """))
             
             # Tabela de Receitas
-            session.execute("""
+            session.execute(text("""
             CREATE TABLE IF NOT EXISTS receitas (
                 nome VARCHAR(255),
                 username VARCHAR(255),
@@ -63,7 +64,7 @@ def init_db():
                 date_saved VARCHAR(100),
                 PRIMARY KEY (nome, username)
             )
-            """)
+            """))
             session.commit()
     except Exception as e:
         logger.error(f"Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
@@ -105,14 +106,14 @@ def save_users_sql(users: list, db_lock) -> bool:
         try:
             conn = st.connection("sql")
             with conn.session as session:
-                session.execute("DELETE FROM usuarios")
+                session.execute(text("DELETE FROM usuarios"))
                 for u in users:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
                     session.execute(
-                        """
+                        text("""
                         INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version)
                         VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version)
-                        """,
+                        """),
                         {
                             "username": u["username"],
                             "email": u.get("email", ""),
@@ -173,13 +174,13 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
             with conn.session as session:
                 # Deletar receita existente com a mesma PK (nome, username)
                 session.execute(
-                    "DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)",
+                    text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
                 
                 # Inserir novos dados
                 session.execute(
-                    """
+                    text("""
                     INSERT INTO receitas (
                         nome, username, nome_produto, peso_embalagem, ingredients,
                         weight_final, portion_size, case_measure, gluten_opt, lactose_opt,
@@ -189,7 +190,7 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
                         :weight_final, :portion_size, :case_measure, :gluten_opt, :lactose_opt,
                         :allergens_direct, :allergens_deriv, :allergens_may_contain, :product_type, :date_saved
                     )
-                    """,
+                    """),
                     {
                         "nome": name,
                         "username": username,
@@ -223,7 +224,7 @@ def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
             conn = st.connection("sql")
             with conn.session as session:
                 session.execute(
-                    "DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)",
+                    text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
                 session.commit()
