@@ -98,16 +98,6 @@ if "product_type" not in st.session_state:
 # Obter valor numérico seguro do nutriente
 
 # Regra de arredondamento ANVISA (IN 75/2020)
-def save_recipe_dialog():
-    st.write("Digite o nome para salvar a receita atual com seus ingredientes e configurações.")
-    name = st.text_input("Nome da Receita:", placeholder="Ex: Bolo de Cenoura com Chocolate", key="new_recipe_name")
-    if st.button("Confirmar e Salvar", type="primary", use_container_width=True):
-        if name.strip():
-            if save_recipe(name.strip(), db_lock):
-                st.success(f"Receita '{name.strip()}' salva com sucesso!")
-                st.rerun()
-        else:
-            st.error("Por favor, digite um nome para a receita.")
 
 # --- LOGIN / CADASTRO FLOW ---
 if not st.session_state.logged_in:
@@ -1066,7 +1056,28 @@ with tab_app:
                     )
             with col_save:
                 if st.button("💾 Salvar Receita", type="secondary", use_container_width=True):
-                    save_recipe_dialog()
+                    st.session_state.show_save_dialog = True
+                
+                if st.session_state.get("show_save_dialog", False):
+                    st.markdown("---")
+                    st.markdown("##### Salvar Receita Atual")
+                    name = st.text_input("Nome da Receita:", placeholder="Ex: Bolo de Cenoura", key="new_recipe_name")
+                    col_save_btn, col_cancel_btn = st.columns(2)
+                    with col_save_btn:
+                        if st.button("Salvar", type="primary", use_container_width=True):
+                            if name.strip():
+                                if save_recipe(name.strip(), db_lock):
+                                    st.toast(f"Receita '{name.strip()}' salva com sucesso!")
+                                    st.session_state.show_save_dialog = False
+                                    st.rerun()
+                                else:
+                                    st.error("Erro ao gravar receita no banco.")
+                            else:
+                                st.error("Digite um nome.")
+                    with col_cancel_btn:
+                        if st.button("Cancelar", type="secondary", use_container_width=True):
+                            st.session_state.show_save_dialog = False
+                            st.rerun()
                     
     elif len(st.session_state.recipe) > 0:
         with col_label:
