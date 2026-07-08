@@ -29,6 +29,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "usuarios.json")
 RECIPES_JSON_PATH = os.path.join(BASE_DIR, "receitas_salvas.json")
+def get_secrets_key(key_name, default=""):
+    try:
+        val = st.secrets.get(key_name)
+        if val:
+            return val
+        norm_target = key_name.replace("_", "").lower()
+        def search_dict(d, target):
+            for k, v in d.items():
+                if k.replace("_", "").lower() == target:
+                    return v
+                if isinstance(v, dict):
+                    res = search_dict(v, target)
+                    if res:
+                        return res
+            return None
+        val = search_dict(st.secrets, norm_target)
+        if val:
+            return val
+    except Exception:
+        pass
+    return default
 
 # Configuração da página Streamlit
 st.set_page_config(
@@ -1045,8 +1066,8 @@ with tab_app:
                         {"credits": 15, "price": 99.90, "name": "Prata (15 créd.)"},
                         {"credits": 50, "price": 249.90, "name": "Ouro (50 créd.)"}
                     ]
-                    access_token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN", "")
-                    back_url = st.secrets.get("APP_BASE_URL", "https://rotulo-facil-app.streamlit.app/")
+                    access_token = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
+                    back_url = get_secrets_key("APP_BASE_URL", "https://rotuleiapp.streamlit.app/")
                     from utils.webhook_handler import create_mercado_pago_preference
                     selected_pkg = st.selectbox(
                         "Selecione um pacote de créditos:",
@@ -1372,8 +1393,8 @@ with tab_perfil:
             {"credits": 50, "price": 249.90, "name": "Ouro", "desc": "Para indústrias e consultores de alimentos"}
         ]
         
-        access_token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN", "")
-        back_url = st.secrets.get("APP_BASE_URL", "https://rotulo-facil-app.streamlit.app/")
+        access_token = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
+        back_url = get_secrets_key("APP_BASE_URL", "https://rotuleiapp.streamlit.app/")
         
         from utils.webhook_handler import create_mercado_pago_preference
         
