@@ -1062,9 +1062,9 @@ with tab_app:
                 if not is_admin_pdf and creditos_disponiveis <= 0:
                     st.warning("Você não possui créditos de impressão disponíveis. Adquira um pacote de créditos para liberar o download do seu PDF oficial:")
                     packages = [
-                        {"credits": 5, "price": 49.90, "name": "Bronze (5 créd.)"},
-                        {"credits": 15, "price": 99.90, "name": "Prata (15 créd.)"},
-                        {"credits": 50, "price": 249.90, "name": "Ouro (50 créd.)"}
+                        {"credits": 1, "price": 19.90, "name": "Avulso (1 Rótulo)"},
+                        {"credits": 5, "price": 49.90, "name": "Empreendedor (5 Rótulos)"},
+                        {"credits": 15, "price": 99.90, "name": "Consultor / Nutri (15 Rótulos)"}
                     ]
                     access_token = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
                     back_url = get_secrets_key("APP_BASE_URL", "https://rotuleiapp.streamlit.app/")
@@ -1388,9 +1388,9 @@ with tab_perfil:
         
         col1, col2, col3 = st.columns(3)
         packages = [
-            {"credits": 5, "price": 49.90, "name": "Bronze", "desc": "Ideal para pequenos produtores"},
-            {"credits": 15, "price": 99.90, "name": "Prata", "desc": "Recomendado - Melhor custo-benefício"},
-            {"credits": 50, "price": 249.90, "name": "Ouro", "desc": "Para indústrias e consultores de alimentos"}
+            {"credits": 1, "price": 19.90, "name": "Avulso", "desc": "Ideal para testes rápidos ou demandas pontuais"},
+            {"credits": 5, "price": 49.90, "name": "Empreendedor (Mais Vendido)", "desc": "Melhor Custo-Benefício - Perfeito para pequenos produtores"},
+            {"credits": 15, "price": 99.90, "name": "Consultor / Nutri", "desc": "Focado em profissionais de nutrição, engenharia e consultoria"}
         ]
         
         access_token = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
