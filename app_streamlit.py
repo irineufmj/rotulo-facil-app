@@ -233,23 +233,75 @@ if not st.session_state.logged_in:
                             st.error(msg)
     st.stop()
 
+# --- NAVEGAÇÃO NA SIDEBAR ---
+if "selected_page" not in st.session_state:
+    st.session_state.selected_page = "Calculadora & Rótulo"
+
+nav_options = [
+    "Calculadora & Rótulo", 
+    "Minhas Receitas Salvas", 
+    "Cadastrar Novo Ingrediente",
+    "Meu Perfil"
+]
+is_admin = st.session_state.get("is_admin", False)
+if is_admin:
+    nav_options.append("Painel Administrador")
+
 # Sidebar do Usuário Conectado
 with st.sidebar:
-    st.markdown("### 👤 Usuário Conectado")
-    st.markdown(f"Conectado como: **{st.session_state.username}**")
+    # 1. Logo oficial
+    if os.path.exists("assets/logo.jpg"):
+        st.image("assets/logo.jpg", use_container_width=True)
+    else:
+        st.markdown('<h2 style="font-family: \'Outfit\', sans-serif; color: #0b3b4c; margin: 0; font-weight: 800;">Rotulei App</h2>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size: 0.8rem; color: #6b7280; margin-bottom: 20px;">Tabela Nutricional & Análise</p>', unsafe_allow_html=True)
+        
+    st.markdown("---")
     
-    # Exibição do Saldo
+    # Encontrar index da seleção atual no rádio
+    try:
+        default_idx = nav_options.index(st.session_state.selected_page)
+    except ValueError:
+        default_idx = 0
+        
+    selected_page = st.radio(
+        "Navegação",
+        options=nav_options,
+        index=default_idx,
+        key="nav_page_selection",
+        label_visibility="collapsed"
+    )
+    st.session_state.selected_page = selected_page
+    
+    # 2. Exibição do Saldo (Estilo SaaS Premium)
     all_users_side = load_users(db_lock)
     current_user_side = next((u for u in all_users_side if u["username"].lower() == st.session_state.username.lower()), None)
+    
+    st.markdown("---")
     if st.session_state.get("is_admin", False):
-        st.markdown("💳 **Balance: Ilimitado (Admin)**")
+        st.markdown(f"""
+        <div style="background-color: #f3f4f6; border-left: 4px solid #9ca3af; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+            <p style="margin: 0; font-size: 0.75rem; color: #4b5563; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Saldo</p>
+            <p style="margin: 0; font-size: 1.1rem; color: #111827; font-weight: 800;">Ilimitado (Admin)</p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         creditos_side = current_user_side.get("creditos_disponiveis", 0) if current_user_side else 0
-        st.markdown(f"💳 **Balance: {creditos_side} créditos disponíveis**")
+        st.markdown(f"""
+        <div style="background-color: #e6f7f4; border-left: 4px solid #00a896; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+            <p style="margin: 0; font-size: 0.75rem; color: #007d70; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Saldo de Créditos</p>
+            <p style="margin: 0; font-size: 1.3rem; color: #0b3b4c; font-weight: 800; line-height: 1.2;">{creditos_side} <span style="font-size: 0.85rem; font-weight: normal; color: #007d70;">disponíveis</span></p>
+        </div>
+        """, unsafe_allow_html=True)
         
-    if st.session_state.get("is_admin", False):
-        st.markdown("🛡️ **Acesso Administrador**")
-    if st.button("🚪 Sair da Conta", type="secondary", use_container_width=True):
+        # Botão elegante para adquirir créditos
+        if st.button("Adquirir Créditos", type="primary", use_container_width=True):
+            st.session_state.selected_page = "Meu Perfil"
+            st.rerun()
+            
+    st.markdown("---")
+    st.markdown(f"Conectado como: **{st.session_state.username}**")
+    if st.button("Sair da Conta", type="secondary", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.session_state.is_admin = False
@@ -259,7 +311,6 @@ with st.sidebar:
         st.session_state.peso_embalagem = 0.0
         st.toast("Você saiu da conta.")
         st.rerun()
-    st.markdown("---")
 
 # --- SUCESSO NO PAGAMENTO MERCADO PAGO ---
 if st.query_params.get("status") == "approved":
@@ -267,32 +318,13 @@ if st.query_params.get("status") == "approved":
     st.balloons()
     st.query_params.clear()
 
-# --- TABS PRINCIPAIS ---
-tab_titles = [
-    "📋 Calculadora & Rótulo ANVISA", 
-    "📁 Minhas Receitas Salvas", 
-    "➕ Cadastrar Novo Ingrediente",
-    "👤 Meu Perfil"
-]
-is_admin = st.session_state.get("is_admin", False)
-if is_admin:
-    tab_titles.append("🔑 Painel Administrador")
-    
-tabs = st.tabs(tab_titles)
-tab_app = tabs[0]
-tab_receitas = tabs[1]
-tab_cadastro = tabs[2]
-tab_perfil = tabs[3]
-if is_admin:
-    tab_admin = tabs[4]
-
 # ==============================================================================
 # TAB 1: CALCULADORA E RÓTULO
 # ==============================================================================
-with tab_app:
+if st.session_state.selected_page == "Calculadora & Rótulo":
     # Cabeçalho do App
-    st.markdown('<h1 class="main-title">📋 Rotulei App - ANVISA</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Buscador unificado TBCA + TACO, montador de receitas e gerador de rótulos de acordo com as normas ANVISA.</p>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">Rotulei App</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Buscador unificado TBCA + TACO, montador de receitas e gerador de rótulos de acordo com as normas da ANVISA.</p>', unsafe_allow_html=True)
     
     # Grid de Layout
     col_input, col_label = st.columns([1.1, 0.9])
@@ -704,11 +736,10 @@ with tab_app:
 
         # Exibir painel direito (Visualização da Tabela ANVISA, Lupa e Textos Legais)
         with col_label:
-            st.markdown("### 📋 Pré-visualização do Rótulo")
+            st.markdown("### Pré-visualização do Rótulo")
             cost_per_portion = (total_recipe_cost / weight_final) * portion_size
             st.info(f"**Custo Estimado da Receita:** R$ {total_recipe_cost:.2f} | **Custo por Porção:** R$ {cost_per_portion:.2f}")
             
-            # Exibir nome do produto no painel de pré-visualização
             # Exibir nome do produto no painel de pré-visualização
             if st.session_state.nome_produto:
                 safe_nome_produto = html.escape(st.session_state.nome_produto)
@@ -716,33 +747,19 @@ with tab_app:
             
             st.divider() # Separação visual superior
             
-            with st.container():
-                # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
-                # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
-                if alto_acucar or alto_gordura or alto_sodio:
-                    lupa_content_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
-                else:
-                    lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
-                    
-                lupa_container_html = f"""
-                <div class="watermarked-preview" style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto; position: relative;">
-                    {lupa_content_html}
-                </div>
-                """
-                st.markdown(lupa_container_html, unsafe_allow_html=True)
-                
-                # AVISO DE COMPROVAÇÃO DA LUPA (Simulador)
-                st.markdown("<p style='text-align: center; font-size: 11px; color: gray; line-height: 1.2;'>* Os selos de rotulagem frontal (Lupa) são gerados automaticamente caso o produto atinja os limites da RDC 429/2020 por 100g (Açúcar Adicionado &ge; 15g, Gordura Saturada &ge; 6g, Sódio &ge; 600mg).</p>", unsafe_allow_html=True)
+            # --- Renderização Visual das Lupas (Estilo Oficial ANVISA PNG/SVG) ---
+            # Sempre reserva o espaço da Lupa acima da tabela. Se nenhum nutriente exceder, exibe um espaço em branco.
+            if alto_acucar or alto_gordura or alto_sodio:
+                lupa_content_html = get_lupa_html(alto_acucar, alto_gordura, alto_sodio)
+            else:
+                lupa_content_html = '<div style="height: 180px;"></div>' # Espaço em branco para manter a altura estável
 
-            
             # Calcular número de porções conforme regras da ANVISA
-            # Se peso_embalagem foi informado, calcula com base nele; senão, usa o rendimento da receita
             ref_weight = peso_embalagem if peso_embalagem > 0.0 else weight_final
             n_raw = ref_weight / portion_size
             if n_raw < 1.5:
                 n_porcoes_str = "Cerca de 1"
             elif n_raw <= 10.0:
-                # Arredonda para o meio (0.5) mais próximo
                 val_rounded = round(n_raw * 2) / 2
                 n_porcoes_str = f"Cerca de {str(val_rounded).replace('.', ',')}"
                 if n_porcoes_str.endswith(',0'):
@@ -752,93 +769,100 @@ with tab_app:
             
             # --- Renderização HTML da Tabela ANVISA ---
             safe_case_measure = html.escape(case_measure)
-            table_html = f"""
-            <div class="anvisa-table-container">
-                <table class="anvisa-table">
-                    <tr class="header-row">
-                        <th colspan="4">INFORMAÇÃO NUTRICIONAL</th>
-                    </tr>
-                    <tr>
-                        <td colspan="4" style="border-bottom: 2px solid #000;">
-                            {n_porcoes_str} porções por embalagem<br>
-                            Porção: {int(portion_size)} {col_unit} ({safe_case_measure})
-                        </td>
-                    </tr>
-                    <tr style="font-weight: bold; text-align: center; background-color: #eee;">
-                         <td>Colunas</td>
-                         <td style="text-align: right; width: 60px;">{col_100_label}</td>
-                         <td style="text-align: right; width: 70px;">{col_portion_label}</td>
-                        <td style="text-align: right; width: 50px;">%VD*</td>
-                    </tr>
-                    <tr>
-                        <td>Valor energético (kcal)</td>
-                        <td class="num">{display_100g['Energia (kcal)']}</td>
-                        <td class="num">{display_portion['Energia (kcal)']}</td>
-                        <td class="num">{int(vd_percents['Energia (kcal)'])}</td>
-                    </tr>
-                    <tr>
-                        <td>Carboidratos (g)</td>
-                        <td class="num">{display_100g['Carboidrato total (g)']}</td>
-                        <td class="num">{display_portion['Carboidrato total (g)']}</td>
-                        <td class="num">{int(vd_percents['Carboidrato total (g)'])}</td>
-                    </tr>
-                    <tr class="indent-row">
-                        <td class="name">Açúcares totais (g)</td>
-                        <td class="num">{display_100g['Açúcares totais (g)']}</td>
-                        <td class="num">{display_portion['Açúcares totais (g)']}</td>
-                        <td class="num">-</td>
-                    </tr>
-                    <tr class="indent-row">
-                        <td class="name">Açúcares adicionados (g)</td>
-                        <td class="num">{display_100g['Açúcares adicionados (g)']}</td>
-                        <td class="num">{display_portion['Açúcares adicionados (g)']}</td>
-                        <td class="num">{int(vd_percents['Açúcares adicionados (g)'])}</td>
-                    </tr>
-                    <tr>
-                        <td>Proteínas (g)</td>
-                        <td class="num">{display_100g['Proteína (g)']}</td>
-                        <td class="num">{display_portion['Proteína (g)']}</td>
-                        <td class="num">{int(vd_percents['Proteína (g)'])}</td>
-                    </tr>
-                    <tr>
-                        <td>Gorduras totais (g)</td>
-                        <td class="num">{display_100g['Lipídios (g)']}</td>
-                        <td class="num">{display_portion['Lipídios (g)']}</td>
-                        <td class="num">{int(vd_percents['Lipídios (g)'])}</td>
-                    </tr>
-                    <tr class="indent-row">
-                        <td class="name">Gorduras saturadas (g)</td>
-                        <td class="num">{display_100g['Gorduras saturadas (g)']}</td>
-                        <td class="num">{display_portion['Gorduras saturadas (g)']}</td>
-                        <td class="num">{int(vd_percents['Gorduras saturadas (g)'])}</td>
-                    </tr>
-                    <tr class="indent-row">
-                        <td class="name">Gorduras trans (g)</td>
-                        <td class="num">{display_100g['Gorduras trans (g)']}</td>
-                        <td class="num">{display_portion['Gorduras trans (g)']}</td>
-                        <td class="num">-</td>
-                    </tr>
-                    <tr>
-                        <td>Fibra alimentar (g)</td>
-                        <td class="num">{display_100g['Fibra alimentar (g)']}</td>
-                        <td class="num">{display_portion['Fibra alimentar (g)']}</td>
-                        <td class="num">{int(vd_percents['Fibra alimentar (g)'])}</td>
-                    </tr>
-                    <tr>
-                        <td>Sódio (mg)</td>
-                        <td class="num">{display_100g['Sódio (mg)']}</td>
-                        <td class="num">{display_portion['Sódio (mg)']}</td>
-                        <td class="num">{int(vd_percents['Sódio (mg)'])}</td>
-                    </tr>
-                    <tr>
-                        <td colspan="4" style="font-size: 8px; border-top: 2px solid #000; text-align: justify;">
-                            * Percentual de valores diários fornecidos pela porção.
-                        </td>
-                    </tr>
-                </table>
+            
+            combined_preview_html = f"""
+            <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.01); max-width: 440px; margin: 0 auto; box-sizing: border-box;">
+                <div class="watermarked-preview" style="max-width: 420px; min-height: 180px; display: flex; align-items: center; justify-content: center; margin: 10px auto; position: relative; box-sizing: border-box;">
+                    {lupa_content_html}
+                </div>
+                <p style='text-align: center; font-size: 11px; color: gray; line-height: 1.2; margin-top: 5px; margin-bottom: 20px;'>* Os selos de rotulagem frontal (Lupa) são gerados automaticamente caso o produto atinja os limites da RDC 429/2020 por 100g (Açúcar Adicionado &ge; 15g, Gordura Saturada &ge; 6g, Sódio &ge; 600mg).</p>
+                <div class="anvisa-table-container">
+                    <table class="anvisa-table">
+                        <tr class="header-row">
+                            <th colspan="4">INFORMAÇÃO NUTRICIONAL</th>
+                        </tr>
+                        <tr>
+                            <td colspan="4" style="border-bottom: 2px solid #000;">
+                                {n_porcoes_str} porções por embalagem<br>
+                                Porção: {int(portion_size)} {col_unit} ({safe_case_measure})
+                            </td>
+                        </tr>
+                        <tr style="font-weight: bold; text-align: center; background-color: #eee;">
+                             <td>Colunas</td>
+                             <td style="text-align: right; width: 60px;">{col_100_label}</td>
+                             <td style="text-align: right; width: 70px;">{col_portion_label}</td>
+                            <td style="text-align: right; width: 50px;">%VD*</td>
+                        </tr>
+                        <tr>
+                            <td>Valor energético (kcal)</td>
+                            <td class="num">{display_100g['Energia (kcal)']}</td>
+                            <td class="num">{display_portion['Energia (kcal)']}</td>
+                            <td class="num">{int(vd_percents['Energia (kcal)'])}</td>
+                        </tr>
+                        <tr>
+                            <td>Carboidratos (g)</td>
+                            <td class="num">{display_100g['Carboidrato total (g)']}</td>
+                            <td class="num">{display_portion['Carboidrato total (g)']}</td>
+                            <td class="num">{int(vd_percents['Carboidrato total (g)'])}</td>
+                        </tr>
+                        <tr class="indent-row">
+                            <td class="name">Açúcares totais (g)</td>
+                            <td class="num">{display_100g['Açúcares totais (g)']}</td>
+                            <td class="num">{display_portion['Açúcares totais (g)']}</td>
+                            <td class="num">-</td>
+                        </tr>
+                        <tr class="indent-row">
+                            <td class="name">Açúcares adicionados (g)</td>
+                            <td class="num">{display_100g['Açúcares adicionados (g)']}</td>
+                            <td class="num">{display_portion['Açúcares adicionados (g)']}</td>
+                            <td class="num">{int(vd_percents['Açúcares adicionados (g)'])}</td>
+                        </tr>
+                        <tr>
+                            <td>Proteínas (g)</td>
+                            <td class="num">{display_100g['Proteína (g)']}</td>
+                            <td class="num">{display_portion['Proteína (g)']}</td>
+                            <td class="num">{int(vd_percents['Proteína (g)'])}</td>
+                        </tr>
+                        <tr>
+                            <td>Gorduras totais (g)</td>
+                            <td class="num">{display_100g['Lipídios (g)']}</td>
+                            <td class="num">{display_portion['Lipídios (g)']}</td>
+                            <td class="num">{int(vd_percents['Lipídios (g)'])}</td>
+                        </tr>
+                        <tr class="indent-row">
+                            <td class="name">Gorduras saturadas (g)</td>
+                            <td class="num">{display_100g['Gorduras saturadas (g)']}</td>
+                            <td class="num">{display_portion['Gorduras saturadas (g)']}</td>
+                            <td class="num">{int(vd_percents['Gorduras saturadas (g)'])}</td>
+                        </tr>
+                        <tr class="indent-row">
+                            <td class="name">Gorduras trans (g)</td>
+                            <td class="num">{display_100g['Gorduras trans (g)']}</td>
+                            <td class="num">{display_portion['Gorduras trans (g)']}</td>
+                            <td class="num">-</td>
+                        </tr>
+                        <tr>
+                            <td>Fibra alimentar (g)</td>
+                            <td class="num">{display_100g['Fibra alimentar (g)']}</td>
+                            <td class="num">{display_portion['Fibra alimentar (g)']}</td>
+                            <td class="num">{int(vd_percents['Fibra alimentar (g)'])}</td>
+                        </tr>
+                        <tr>
+                            <td>Sódio (mg)</td>
+                            <td class="num">{display_100g['Sódio (mg)']}</td>
+                            <td class="num">{display_portion['Sódio (mg)']}</td>
+                            <td class="num">{int(vd_percents['Sódio (mg)'])}</td>
+                        </tr>
+                        <tr>
+                            <td colspan="4" style="font-size: 8px; border-top: 2px solid #000; text-align: justify;">
+                                * Percentual de valores diários fornecidos pela porção.
+                            </td>
+                        </tr>
+                    </table>
+                </div>
             </div>
             """
-            st.markdown(table_html, unsafe_allow_html=True)
+            st.markdown(combined_preview_html, unsafe_allow_html=True)
             
             st.divider() # Separação visual inferior
             
@@ -862,7 +886,7 @@ with tab_app:
             
             alergenicos_text = ". ".join(alergenicos_text_list)
             
-            st.markdown("##### 📝 Textos Legais (Cópia Rápida)")
+            st.markdown("##### Textos Legais (Cópia Rápida)")
             
             safe_ing_text = html.escape(ing_text)
             legal_html = f"""
@@ -1133,18 +1157,18 @@ with tab_app:
                     
     elif len(st.session_state.recipe) > 0:
         with col_label:
-            st.markdown("### 📋 Pré-visualização do Rótulo")
+            st.markdown("### Pré-visualização do Rótulo")
             st.info("⚠️ Alterações detectadas. Clique em **'Calcular Rótulo Oficial'** no painel esquerdo para processar a receita e visualizar a tabela oficial e os alertas.")
     else:
         with col_label:
-            st.markdown("### 📋 Pré-visualização do Rótulo")
+            st.markdown("### Pré-visualização do Rótulo")
             st.info("Adicione ingredientes à receita para iniciar os cálculos.")
 
 # ==============================================================================
 # TAB: MINHAS RECEITAS SALVAS
 # ==============================================================================
-with tab_receitas:
-    st.markdown("### 📁 Minhas Receitas Salvas")
+if st.session_state.selected_page == "Minhas Receitas Salvas":
+    st.markdown("### Minhas Receitas Salvas")
     st.markdown("Consulte, carregue ou remova receitas salvas localmente no banco de dados do aplicativo.")
     
     current_username = st.session_state.get("username", "")
@@ -1247,8 +1271,8 @@ with tab_receitas:
 # ==============================================================================
 # TAB 2: CADASTRAR NOVO INGREDIENTE
 # ==============================================================================
-with tab_cadastro:
-    st.markdown("### ➕ Cadastrar Novo Ingrediente")
+if st.session_state.selected_page == "Cadastrar Novo Ingrediente":
+    st.markdown("### Cadastrar Novo Ingrediente")
     st.markdown("Insira manualmente as informações nutricionais do ingrediente conforme o rótulo do fornecedor. O sistema converterá automaticamente para a base de 100g.")
     
     with st.form("form_cadastro_ingrediente", clear_on_submit=True):
@@ -1338,8 +1362,8 @@ with tab_cadastro:
 # ==============================================================================
 # TAB 4: MEU PERFIL
 # ==============================================================================
-with tab_perfil:
-    st.markdown('### 👤 Meu Perfil')
+if st.session_state.selected_page == "Meu Perfil":
+    st.markdown('### Meu Perfil')
     st.markdown('Edite suas informações cadastrais.')
     
     current_username = st.session_state.username
@@ -1429,8 +1453,8 @@ with tab_perfil:
         st.error('Não foi possível carregar os dados do seu perfil.')
 
 if is_admin:
-    with tab_admin:
-        st.markdown("### 🔑 Painel do Administrador")
+    if st.session_state.selected_page == "Painel Administrador":
+        st.markdown("### Painel do Administrador")
         st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
         
         users = load_users(db_lock)

@@ -19,7 +19,7 @@ def inject_custom_css():
         font-family: 'Outfit', sans-serif;
         font-size: 2.5rem;
         font-weight: 900;
-        background: linear-gradient(135deg, #059669, #2563eb);
+        background: linear-gradient(135deg, #0b3b4c, #00a896);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.2rem;
@@ -51,12 +51,14 @@ def inject_custom_css():
     /* ANVISA Table Enhancements */
     .anvisa-table-container {
         background-color: #ffffff;
-        padding: 1.5rem;
+        padding: 1.2rem;
         border-radius: 12px;
         border: 2px solid #111111;
+        width: 100%;
         max-width: 420px;
         margin: 0 auto;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        box-sizing: border-box;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
         transition: transform 0.3s ease;
     }
     .anvisa-table-container:hover {
@@ -100,6 +102,18 @@ def inject_custom_css():
     }
     .stButton>button:hover {
         transform: scale(1.02);
+    }
+    
+    /* Primary buttons brand coloring */
+    button[data-testid="baseButton-primary"] {
+        background-color: #00a896 !important;
+        color: #ffffff !important;
+        border: none !important;
+    }
+    button[data-testid="baseButton-primary"]:hover {
+        background-color: #028090 !important;
+        color: #ffffff !important;
+        border: none !important;
     }
     
     .legal-box {
