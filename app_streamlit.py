@@ -258,20 +258,13 @@ with st.sidebar:
         
     st.markdown("---")
     
-    # Encontrar index da seleção atual no rádio
-    try:
-        default_idx = nav_options.index(st.session_state.selected_page)
-    except ValueError:
-        default_idx = 0
-        
-    selected_page = st.radio(
-        "Navegação",
-        options=nav_options,
-        index=default_idx,
-        key="nav_page_selection",
-        label_visibility="collapsed"
-    )
-    st.session_state.selected_page = selected_page
+    # Renderizar botões de navegação estilizados (sem bolinhas)
+    for option in nav_options:
+        is_selected = (st.session_state.selected_page == option)
+        btn_type = "primary" if is_selected else "secondary"
+        if st.button(option, type=btn_type, use_container_width=True, key=f"nav_btn_{option}"):
+            st.session_state.selected_page = option
+            st.rerun()
     
     # 2. Exibição do Saldo (Estilo SaaS Premium)
     all_users_side = load_users(db_lock)
@@ -294,13 +287,22 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
         
-        # Botão elegante para adquirir créditos
+        # Botão elegante para adquirir créditos (com classe de wrapper para estilo sólido)
+        st.markdown('<div class="buy-credits-wrapper"></div>', unsafe_allow_html=True)
         if st.button("Adquirir Créditos", type="primary", use_container_width=True):
             st.session_state.selected_page = "Meu Perfil"
             st.rerun()
             
+    # Bloco de Usuário no Rodapé (Estilo SaaS Premium)
     st.markdown("---")
-    st.markdown(f"Conectado como: **{st.session_state.username}**")
+    st.markdown(f"""
+    <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; font-size: 0.8rem; color: #4b5563; margin-top: 15px;">
+        <p style="margin: 0; font-weight: bold; font-size: 0.7rem; text-transform: uppercase; color: #9ca3af; letter-spacing: 0.5px;">Sessão Ativa</p>
+        <p style="margin: 3px 0 10px 0; font-size: 0.85rem; color: #111827;"><strong>{st.session_state.username}</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<div class="logout-wrapper"></div>', unsafe_allow_html=True)
     if st.button("Sair da Conta", type="secondary", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""

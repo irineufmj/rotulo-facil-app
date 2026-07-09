@@ -147,6 +147,67 @@ def inject_custom_css():
         letter-spacing: 2px;
         text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.3);
     }
+    
+    /* Sidebar menu buttons styling */
+    div[data-testid="stSidebar"] button {
+        text-align: left !important;
+        justify-content: flex-start !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 8px 12px !important;
+        font-size: 0.9rem !important;
+        transition: all 0.2s ease !important;
+        width: 100% !important;
+    }
+    /* Secondary sidebar buttons (unselected menu items) */
+    div[data-testid="stSidebar"] button[kind="secondary"] {
+        background-color: transparent !important;
+        color: #4b5563 !important;
+    }
+    div[data-testid="stSidebar"] button[kind="secondary"]:hover {
+        background-color: #f3f4f6 !important;
+        color: #111827 !important;
+    }
+    /* Primary sidebar buttons (selected menu item) */
+    div[data-testid="stSidebar"] button[kind="primary"] {
+        background-color: #e6f7f4 !important;
+        color: #00a88f !important;
+        font-weight: bold !important;
+    }
+    div[data-testid="stSidebar"] button[kind="primary"]:hover {
+        background-color: #d1f2eb !important;
+        color: #007d70 !important;
+    }
+    
+    /* Solid Green button for Adquirir Créditos */
+    div.element-container:has(div.buy-credits-wrapper) + div.element-container button {
+        background-color: #00a88f !important;
+        color: #ffffff !important;
+        font-weight: bold !important;
+        border: none !important;
+        text-align: center !important;
+        justify-content: center !important;
+    }
+    div.element-container:has(div.buy-credits-wrapper) + div.element-container button:hover {
+        background-color: #008f7a !important;
+        color: #ffffff !important;
+    }
+    
+    /* Style logout button specifically */
+    div.element-container:has(div.logout-wrapper) + div.element-container button {
+        background-color: #fef2f2 !important;
+        color: #ef4444 !important;
+        border: 1px solid #fee2e2 !important;
+        font-size: 0.8rem !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        text-align: center !important;
+        justify-content: center !important;
+    }
+    div.element-container:has(div.logout-wrapper) + div.element-container button:hover {
+        background-color: #fee2e2 !important;
+        color: #dc2626 !important;
+    }
 </style>
     """, unsafe_allow_html=True)
 
