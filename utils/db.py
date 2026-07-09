@@ -42,7 +42,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS usuarios (
                 username VARCHAR(255) PRIMARY KEY,
                 email VARCHAR(255),
-                cpf VARCHAR(20),
+                cpf VARCHAR(255),
                 password_hash TEXT,
                 is_admin BOOLEAN,
                 creditos_disponiveis INT,
@@ -52,6 +52,12 @@ def init_db():
                 lgpd_version VARCHAR(10)
             )
             """))
+            
+            # Migração de coluna: Altera cpf para VARCHAR(255) caso a tabela já existisse como VARCHAR(20)
+            try:
+                session.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
+            except Exception as alter_err:
+                logger.warning(f"Nota: Nao foi possivel alterar a coluna cpf (provavelmente ja migrada): {alter_err}")
             
             # Tabela de Receitas
             session.execute(text("""
