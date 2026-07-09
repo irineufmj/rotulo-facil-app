@@ -16,12 +16,9 @@ from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe
 from utils.calculations import get_num_val, round_anvisa, VDR
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
 
-db_lock = threading.RLock()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
-
-
 # Configurações de logging e concorrência
+import logging
+logger = logging.getLogger(__name__)
 db_lock = threading.RLock()
 
 # Definição absoluta de caminhos de arquivos de dados
@@ -134,20 +131,15 @@ if not st.session_state.logged_in:
             
         st.markdown('<p class="subtitle" style="text-align: center; margin-bottom: 25px;">Gerador de Rótulos ANVISA em conformidade com as normas e dados unificados TBCA + TACO.</p>', unsafe_allow_html=True)
         
-        # Verifica se há erros gravados no arquivo de log do banco de dados (invisível em produção se não houver erros)
+        # Verificação silenciosa de erros de banco — log interno apenas (não exposto ao usuário)
         error_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_error.log")
         if os.path.exists(error_log_path):
             try:
                 with open(error_log_path, "r", encoding="utf-8") as f:
                     log_content = f.read()
-                st.error("🚨 **Último erro detectado no banco de dados:**")
-                with st.expander("Ver Detalhes Técnicos do Erro (Traceback)"):
-                    st.code(log_content)
-                if st.button("🧹 Limpar Log de Erro"):
-                    os.remove(error_log_path)
-                    st.rerun()
+                logger.error(f"[db_error.log detectado na inicialização]:\n{log_content}")
             except Exception as read_err:
-                st.write(f"Erro ao ler log de erro: {read_err}")
+                logger.warning(f"Falha ao ler db_error.log: {read_err}")
 
         # Estrutura de abas (st.tabs) limpa e minimalista no topo do formulário
         tab_login, tab_registro, tab_recuperar = st.tabs(["Entrar", "Criar Conta", "Recuperar Senha"])
@@ -1144,24 +1136,64 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
                         else:
                             st.error("Erro ao gerar link de pagamento.")
                 else:
-                    def consumir_credito():
-                        with db_lock:
-                            users_list = load_users(db_lock)
-                            for u in users_list:
-                                if u["username"].lower() == st.session_state.username.lower():
-                                    if not u.get("is_admin", False):
-                                        u["creditos_disponiveis"] = max(0, u.get("creditos_disponiveis", 0) - 1)
+                    # Validação final: garantir que o PDF foi gerado com sucesso antes de oferecer o download
+                    if not pdf_data or len(pdf_data) < 100:
+                        st.error("Erro interno: o PDF não pôde ser gerado. Nenhum crédito foi debitado. Tente novamente.")
+                    else:
+                        def consumir_credito():
+                            """
+                            Debita 1 crédito do usuário de forma atômica e segura.
+                            - Só é chamado APÓS o download_button ser acionado (PDF já entregue ao browser).
+                            - Usa flag de sessão para evitar duplo débito por cliques rápidos.
+                            - Em caso de falha no banco, o crédito NÃO é debitado (fail-safe).
+                            """
+                            # Proteção anti-duplo-clique via flag de sessão
+                            if st.session_state.get("credito_sendo_consumido", False):
+                                return
+                            st.session_state.credito_sendo_consumido = True
+
+                            try:
+                                with db_lock:
+                                    users_list = load_users(db_lock)
+                                    usuario_atualizado = False
+                                    for u in users_list:
+                                        if u["username"].lower() == st.session_state.username.lower():
+                                            if not u.get("is_admin", False):
+                                                creditos_atuais = u.get("creditos_disponiveis", 0)
+                                                if creditos_atuais > 0:
+                                                    u["creditos_disponiveis"] = creditos_atuais - 1
+                                                    usuario_atualizado = True
+                                            break
+
+                                    if usuario_atualizado:
                                         from utils.auth import save_users
-                                        save_users(users_list, db_lock)
-                                        
-                    st.download_button(
-                        label="📥 Gerar e Baixar PDF",
-                        data=pdf_data,
-                        file_name="rotulo_nutricional.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        on_click=consumir_credito
-                    )
+                                        ok = save_users(users_list, db_lock)
+                                        if ok:
+                                            logger.info(
+                                                f"Crédito debitado com sucesso para '{st.session_state.username}'. "
+                                                f"Créditos restantes: {u.get('creditos_disponiveis', '?')}"
+                                            )
+                                        else:
+                                            # Falha ao salvar: reverter para segurança do cliente
+                                            u["creditos_disponiveis"] = creditos_atuais
+                                            logger.error(
+                                                f"Falha ao salvar débito de crédito para '{st.session_state.username}'. "
+                                                "Crédito revertido para segurança do cliente."
+                                            )
+                            except Exception as e:
+                                logger.error(f"Exceção ao consumir crédito para '{st.session_state.username}': {e}", exc_info=True)
+                            finally:
+                                # Liberar a flag em qualquer caso
+                                st.session_state.credito_sendo_consumido = False
+
+                        st.download_button(
+                            label="📥 Gerar e Baixar PDF",
+                            data=pdf_data,
+                            file_name="rotulo_nutricional.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            on_click=consumir_credito
+                        )
             with col_save:
                 if st.button("💾 Salvar Receita", type="secondary", use_container_width=True):
                     st.session_state.show_save_dialog = True

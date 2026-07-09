@@ -42,7 +42,11 @@ def get_default_admin_password():
     try:
         with open(admin_pwd_file, "w", encoding="utf-8") as f:
             f.write(temp_pass)
-        print(f"⚠️ SENHA ADMIN TEMPORÁRIA GERADA: {temp_pass}")
+        # SEGURO: nunca logar a senha em texto puro — apenas informar que foi gerada
+        logger.warning(
+            "Senha admin temporária gerada e salva em .admin_password. "
+            "Configure ADMIN_PASSWORD via st.secrets ou variável de ambiente para produção."
+        )
     except Exception:
         pass
     return temp_pass
@@ -266,19 +270,36 @@ def authenticate_user(username, password, db_lock):
     users = load_users(db_lock)
     for u in users:
         if u["username"].lower() == username_clean.lower() or (u.get("email") and u["email"].strip().lower() == username_clean.lower()):
-            # Master password check from st.secrets
-            master_pass = ""
-            try:
-                master_pass = st.secrets.get("ADMIN_PASSWORD", "")
-            except:
-                pass
-                
+            # Verifica a senha do usuário
             is_valid_pass = verify_password(u["password_hash"], password)
-            if not is_valid_pass and master_pass and password == master_pass and u.get("is_admin", False):
-                is_valid_pass = True
-                
+
+            # Verificação de master password via st.secrets (somente para administradores)
+            # NUNCA é impressa ou logada em texto puro
+            if not is_valid_pass and u.get("is_admin", False):
+                try:
+                    master_pass = st.secrets.get("ADMIN_PASSWORD", "")
+                    if master_pass and password == master_pass:
+                        is_valid_pass = True
+                except Exception:
+                    pass
+
             if is_valid_pass:
                 st.session_state.login_attempts = 0
+
+                # Migração automática de hash legado (SHA-256 simples) para PBKDF2
+                # Detectado pelo salt de 16 hex chars (32 nibbles) e hash de 32 bytes (64 nibbles)
+                stored = u["password_hash"]
+                if ":" in stored:
+                    salt_part, hash_part = stored.split(":", 1)
+                    if len(salt_part) == 32 and len(hash_part) == 64:
+                        # Hash legado detectado — atualizar para PBKDF2 silenciosamente
+                        try:
+                            u["password_hash"] = hash_password(password)
+                            save_users(users, db_lock)
+                            logger.info(f"Hash de senha migrado para PBKDF2 para o usuário '{u['username']}'.")
+                        except Exception as mig_err:
+                            logger.warning(f"Falha na migração de hash: {mig_err}")
+
                 return True, u["username"], u.get("is_admin", False)
             else:
                 st.session_state.login_attempts += 1
