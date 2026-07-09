@@ -158,25 +158,33 @@ def inject_custom_css():
         font-size: 0.9rem !important;
         transition: all 0.2s ease !important;
         width: 100% !important;
+        box-shadow: none !important;
+        background-color: transparent !important;
     }
-    /* Secondary sidebar buttons (unselected menu items) */
+    /* Secondary sidebar buttons (unselected menu items - clean link style) */
     div[data-testid="stSidebar"] button[kind="secondary"] {
         background-color: transparent !important;
         color: #4b5563 !important;
+        border: none !important;
+        box-shadow: none !important;
     }
     div[data-testid="stSidebar"] button[kind="secondary"]:hover {
-        background-color: #f3f4f6 !important;
+        background-color: rgba(243, 244, 246, 0.8) !important;
         color: #111827 !important;
     }
     /* Primary sidebar buttons (selected menu item) */
     div[data-testid="stSidebar"] button[kind="primary"] {
-        background-color: #e6f7f4 !important;
-        color: #00a88f !important;
+        background-color: rgba(0, 168, 143, 0.1) !important;
+        color: #0b3b4c !important;
         font-weight: bold !important;
+        border: none !important;
+        border-left: 4px solid #00a88f !important;
+        border-radius: 0px 8px 8px 0px !important;
+        padding-left: 12px !important;
     }
     div[data-testid="stSidebar"] button[kind="primary"]:hover {
-        background-color: #d1f2eb !important;
-        color: #007d70 !important;
+        background-color: rgba(0, 168, 143, 0.15) !important;
+        color: #0b3b4c !important;
     }
     
     /* Solid Green button for Adquirir Créditos */
@@ -187,14 +195,20 @@ def inject_custom_css():
         border: none !important;
         text-align: center !important;
         justify-content: center !important;
+        border-radius: 0px 0px 12px 12px !important;
+        margin-top: -1px !important;
+        width: 100% !important;
+        border-left: 4px solid #00a88f !important;
+        padding: 8px 12px !important;
     }
     div.element-container:has(div.buy-credits-wrapper) + div.element-container button:hover {
         background-color: #008f7a !important;
         color: #ffffff !important;
     }
     
-    /* Style logout button specifically */
-    div.element-container:has(div.logout-wrapper) + div.element-container button {
+    /* Style logout button and other danger buttons specifically */
+    div.element-container:has(div.logout-wrapper) + div.element-container button,
+    div.element-container:has(div.danger-button-wrapper) + div.element-container button {
         background-color: #fef2f2 !important;
         color: #ef4444 !important;
         border: 1px solid #fee2e2 !important;
@@ -204,7 +218,8 @@ def inject_custom_css():
         text-align: center !important;
         justify-content: center !important;
     }
-    div.element-container:has(div.logout-wrapper) + div.element-container button:hover {
+    div.element-container:has(div.logout-wrapper) + div.element-container button:hover,
+    div.element-container:has(div.danger-button-wrapper) + div.element-container button:hover {
         background-color: #fee2e2 !important;
         color: #dc2626 !important;
     }

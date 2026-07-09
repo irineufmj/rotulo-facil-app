@@ -273,7 +273,7 @@ with st.sidebar:
     st.markdown("---")
     if st.session_state.get("is_admin", False):
         st.markdown(f"""
-        <div style="background-color: #f3f4f6; border-left: 4px solid #9ca3af; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+        <div style="background-color: #f3f4f6; border-left: 4px solid #9ca3af; padding: 12px; border-radius: 8px; margin-bottom: 12px; margin-top: 30px;">
             <p style="margin: 0; font-size: 0.75rem; color: #4b5563; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Saldo</p>
             <p style="margin: 0; font-size: 1.1rem; color: #111827; font-weight: 800;">Ilimitado (Admin)</p>
         </div>
@@ -281,7 +281,7 @@ with st.sidebar:
     else:
         creditos_side = current_user_side.get("creditos_disponiveis", 0) if current_user_side else 0
         st.markdown(f"""
-        <div style="background-color: #e6f7f4; border-left: 4px solid #00a896; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+        <div style="background-color: #e6f7f4; border-left: 4px solid #00a88f; padding: 12px 12px 6px 12px; border-radius: 8px 8px 0px 0px; margin-bottom: 0px; margin-top: 30px;">
             <p style="margin: 0; font-size: 0.75rem; color: #007d70; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Saldo de Créditos</p>
             <p style="margin: 0; font-size: 1.3rem; color: #0b3b4c; font-weight: 800; line-height: 1.2;">{creditos_side} <span style="font-size: 0.85rem; font-weight: normal; color: #007d70;">disponíveis</span></p>
         </div>
@@ -459,6 +459,7 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
                     st.session_state["weight_final_widget"] = float(st.session_state.weight_final)
                 st.session_state.calculated = False
                 st.rerun()
+            st.markdown('<div class="danger-button-wrapper"></div>', unsafe_allow_html=True)
             if col_clr.button("Limpar Tudo", type="secondary", use_container_width=True):
                 st.session_state.recipe = []
                 st.session_state.weight_final = 0.0
@@ -1290,6 +1291,7 @@ if st.session_state.selected_page == "Minhas Receitas Salvas":
                     st.toast(f"Cópia da receita pronta para edição!")
                     st.rerun()
             with col_del:
+                st.markdown('<div class="danger-button-wrapper"></div>', unsafe_allow_html=True)
                 if st.button("🗑️ Excluir Receita Permanentemente", type="secondary", use_container_width=True):
                     if delete_recipe(selected_name, db_lock):
                         st.toast(f"Receita **{selected_name}** excluída com sucesso!")
@@ -1578,6 +1580,7 @@ if is_admin:
                 st.warning("⚠️ **ATENÇÃO:** A exclusão removerá permanentemente a conta do usuário e todas as receitas salvas por ele em cascata.")
                 confirm_del_text = st.text_input(f"Digite o nome do usuário '{selected_del_username}' para confirmar:")
                 
+                st.markdown('<div class="danger-button-wrapper"></div>', unsafe_allow_html=True)
                 if st.button("Excluir Usuário Definitivamente", type="secondary", use_container_width=True):
                     if confirm_del_text.strip() == selected_del_username:
                         success, msg = admin_delete_user(selected_del_username, db_lock)
