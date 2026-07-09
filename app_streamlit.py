@@ -122,14 +122,18 @@ if "product_type" not in st.session_state:
 
 # --- LOGIN / CADASTRO FLOW ---
 if not st.session_state.logged_in:
-    # Cabeçalho da página de acesso
-    st.markdown('<h1 class="main-title" style="text-align: center;">📋 Rotulei App - Login</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle" style="text-align: center;">Gerador de Rótulos ANVISA em conformidade com as normas e dados unificados TBCA + TACO.</p>', unsafe_allow_html=True)
-    
     # Criar uma caixa centralizada com colunas
-    col_left, col_center, col_right = st.columns([1, 1.2, 1])
+    col_left, col_center, col_right = st.columns([1, 1.3, 1])
     
     with col_center:
+        # Inserção do logotipo oficial centralizado no topo
+        if os.path.exists("assets/logo.jpg"):
+            st.image("assets/logo.jpg", use_container_width=True)
+        else:
+            st.markdown('<h1 class="main-title" style="text-align: center; font-size: 2.2rem; margin-top: 10px;">Rotulei App</h1>', unsafe_allow_html=True)
+            
+        st.markdown('<p class="subtitle" style="text-align: center; margin-bottom: 25px;">Gerador de Rótulos ANVISA em conformidade com as normas e dados unificados TBCA + TACO.</p>', unsafe_allow_html=True)
+        
         # Verifica se há erros gravados no arquivo de log do banco de dados (invisível em produção se não houver erros)
         error_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_error.log")
         if os.path.exists(error_log_path):
@@ -145,12 +149,11 @@ if not st.session_state.logged_in:
             except Exception as read_err:
                 st.write(f"Erro ao ler log de erro: {read_err}")
 
-        auth_mode = st.radio("Escolha uma opção:", ["Entrar", "Criar Nova Conta", "Esqueci minha senha"], horizontal=True, label_visibility="collapsed")
+        # Estrutura de abas (st.tabs) limpa e minimalista no topo do formulário
+        tab_login, tab_registro, tab_recuperar = st.tabs(["Entrar", "Criar Conta", "Recuperar Senha"])
         
-        st.markdown("---")
-        
-        if auth_mode == "Entrar":
-            st.markdown("### 🔑 Entrar no Sistema")
+        with tab_login:
+            st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Entrar no Sistema</h4>', unsafe_allow_html=True)
             with st.form("form_login_usuario"):
                 login_user = st.text_input("Usuário:", placeholder="Digite seu nome de usuário", key="login_username_field")
                 login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
@@ -166,27 +169,9 @@ if not st.session_state.logged_in:
                         st.rerun()
                     else:
                         st.error(result)
-                    
-        elif auth_mode == "Esqueci minha senha":
-            st.markdown("### 🔓 Recuperação de Senha")
-            st.info("Para redefinir sua senha, informe o e-mail cadastrado na sua conta. Você receberá uma senha temporária.")
-            with st.form("form_recuperar_senha"):
-                rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
-                
-                submit_rec = st.form_submit_button("Enviar E-mail de Recuperação", type="primary", use_container_width=True)
-                if submit_rec:
-                    if not rec_email:
-                        st.error("Preencha o campo de e-mail para recuperar a senha.")
-                    else:
-                        with st.spinner("Enviando e-mail..."):
-                            success, msg = recover_password_email(rec_email, db_lock)
-                        if success:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                    
-        else: # Criar Nova Conta
-            st.markdown("### 📝 Criar Nova Conta")
+                        
+        with tab_registro:
+            st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Criar Nova Conta</h4>', unsafe_allow_html=True)
             with st.form("form_registro_usuario"):
                 new_user = st.text_input("Nome de Usuário:", placeholder="Escolha um nome de usuário", key="reg_username_field")
                 new_email = st.text_input("E-mail:", placeholder="Ex: usuario@email.com", key="reg_email_field")
@@ -229,6 +214,24 @@ if not st.session_state.logged_in:
                             st.success(msg)
                             st.toast(f"Conta criada! Bem-vindo, {new_user.strip()}!")
                             st.rerun()
+                        else:
+                            st.error(msg)
+                            
+        with tab_recuperar:
+            st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Recuperação de Senha</h4>', unsafe_allow_html=True)
+            st.info("Para redefinir sua senha, informe o e-mail cadastrado na sua conta. Você receberá uma senha temporária.")
+            with st.form("form_recuperar_senha"):
+                rec_email = st.text_input("E-mail cadastrado:", key="rec_email")
+                
+                submit_rec = st.form_submit_button("Enviar E-mail de Recuperação", type="primary", use_container_width=True)
+                if submit_rec:
+                    if not rec_email:
+                        st.error("Preencha o campo de e-mail para recuperar a senha.")
+                    else:
+                        with st.spinner("Enviando e-mail..."):
+                            success, msg = recover_password_email(rec_email, db_lock)
+                        if success:
+                            st.success(msg)
                         else:
                             st.error(msg)
     st.stop()

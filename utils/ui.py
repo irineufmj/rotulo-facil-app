@@ -223,6 +223,22 @@ def inject_custom_css():
         background-color: #fee2e2 !important;
         color: #dc2626 !important;
     }
+    
+    /* Style all form components to look like high-fidelity dashboard cards */
+    div[data-testid="stForm"] {
+        background-color: #ffffff !important;
+        border: 1px solid #e5e7eb !important;
+        border-radius: 16px !important;
+        padding: 24px !important;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.03), 0 4px 6px -2px rgba(0, 0, 0, 0.01) !important;
+    }
+    
+    /* Premium Tabs Style */
+    div[data-testid="stTabBar"] button[aria-selected="true"] {
+        color: #00a88f !important;
+        border-bottom-color: #00a88f !important;
+        font-weight: bold !important;
+    }
 </style>
     """, unsafe_allow_html=True)
 
