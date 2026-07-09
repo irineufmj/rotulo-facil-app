@@ -21,23 +21,28 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
     
     Retorna: (sucesso: bool, mensagem: str)
     """
+    logger.info(f"[Webhook-Handler] Iniciando processamento. Payload recebido: {webhook_payload}")
     payment_id = None
     
     # Mercado Pago envia o ID de formas diferentes dependendo do tipo de notificação
     if webhook_payload.get("type") == "payment":
         payment_id = webhook_payload.get("data", {}).get("id")
+        logger.info(f"[Webhook-Handler] ID extraido de type=payment: {payment_id}")
     elif "id" in webhook_payload and webhook_payload.get("action", "").startswith("payment."):
         payment_id = webhook_payload.get("data", {}).get("id")
+        logger.info(f"[Webhook-Handler] ID extraido de action=payment.*: {payment_id}")
     elif "payment_id" in webhook_payload:
-        # Fallback de parâmetros diretos de teste
         payment_id = webhook_payload.get("payment_id")
+        logger.info(f"[Webhook-Handler] ID extraido do campo direto payment_id: {payment_id}")
     
     if not payment_id:
         # Se for um payload completo de pagamento já consultado (ex: mock ou consulta manual)
         if webhook_payload.get("status") and webhook_payload.get("payer", {}).get("email"):
             payment_details = webhook_payload
             payment_id = str(payment_details.get("id"))
+            logger.info(f"[Webhook-Handler] ID extraido do payload de pagamento completo: {payment_id}")
         else:
+            logger.warning("[Webhook-Handler] Falha: ID do pagamento nao encontrado no payload!")
             return False, "ID do pagamento não encontrado no payload do webhook."
     else:
         payment_id = str(payment_id)
@@ -47,6 +52,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
     if access_token and not payment_details:
         try:
             url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
+            logger.info(f"[Webhook-Handler] Consultando API Mercado Pago em: {url}")
             req = urllib.request.Request(
                 url,
                 headers={"Authorization": f"Bearer {access_token}"}
@@ -54,19 +60,23 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
             with urllib.request.urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     payment_details = json.loads(response.read().decode("utf-8"))
+                    logger.info("[Webhook-Handler] Detalhes do pagamento consultados com sucesso.")
                 else:
+                    logger.warning(f"[Webhook-Handler] Erro na consulta do MP. HTTP Status: {response.status}")
                     return False, f"Erro ao consultar Mercado Pago API: HTTP {response.status}"
         except Exception as e:
-            logger.error(f"Erro ao consultar pagamento {payment_id} no Mercado Pago: {e}", exc_info=True)
+            logger.error(f"[Webhook-Handler] Erro ao consultar pagamento {payment_id} no Mercado Pago: {e}", exc_info=True)
             return False, f"Falha na comunicação com Mercado Pago: {e}"
 
     if not payment_details:
+        logger.warning(f"[Webhook-Handler] Falha: Detalhes do pagamento vazios para ID {payment_id}")
         return False, f"Não foi possível obter os detalhes do pagamento para o ID: {payment_id}"
 
     # Extrair informações cruciais
     status = payment_details.get("status")
     payer_email = payment_details.get("payer", {}).get("email")
     external_ref = payment_details.get("external_reference")
+    logger.info(f"[Webhook-Handler] Extraido: status={status}, email={payer_email}, external_reference={external_ref}")
     
     # Identificar a quantidade de créditos comprados
     # 1. Tentar ler de metadata.credits_to_add
@@ -79,11 +89,13 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
     if isinstance(metadata, dict) and "credits" in metadata:
         try:
             credits_to_add = int(metadata["credits"])
+            logger.info(f"[Webhook-Handler] Creditos extraidos de metadata.credits: {credits_to_add}")
         except ValueError:
             pass
     elif isinstance(metadata, dict) and "credits_to_add" in metadata:
         try:
             credits_to_add = int(metadata["credits_to_add"])
+            logger.info(f"[Webhook-Handler] Creditos extraidos de metadata.credits_to_add: {credits_to_add}")
         except ValueError:
             pass
     elif external_ref and ":" in external_ref:
@@ -91,6 +103,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
         if len(parts) == 2:
             try:
                 credits_to_add = int(parts[1])
+                logger.info(f"[Webhook-Handler] Creditos extraidos de external_reference format (user:credits): {credits_to_add}")
             except ValueError:
                 pass
             
@@ -104,14 +117,19 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
     else:
         target_user_identifier = payer_email.strip().lower() if payer_email else None
 
+    logger.info(f"[Webhook-Handler] Alvo para busca de usuario: '{target_user_identifier}'")
+
     if not target_user_identifier:
+        logger.warning("[Webhook-Handler] Falha: Identificador do usuario nao encontrado nos detalhes do pagamento.")
         return False, "Identificador do usuário (e-mail/external_reference) não encontrado."
 
     if status != "approved":
+        logger.warning(f"[Webhook-Handler] Ignorado: Pagamento {payment_id} com status '{status}' nao aprovado.")
         return False, f"Pagamento {payment_id} está com status '{status}'. Créditos não liberados."
 
     # Atualizar o banco de dados de usuários de forma segura com lock
     with db_lock:
+        logger.info("[Webhook-Handler] Adquirido db_lock. Carregando usuarios...")
         users = load_users(db_lock)
         user_found = None
         
@@ -124,6 +142,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
                 break
                 
         if not user_found:
+            logger.warning(f"[Webhook-Handler] Falha: Usuario '{target_user_identifier}' nao existe no sistema!")
             return False, f"Usuário correspondente a '{target_user_identifier}' não foi encontrado no sistema."
 
         # Evitar processamento duplicado
@@ -131,6 +150,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
             user_found["transacoes_processadas"] = []
             
         if payment_id in user_found["transacoes_processadas"]:
+            logger.info(f"[Webhook-Handler] Transacao {payment_id} ja havia sido aplicada para '{user_found['username']}'. Ignorando.")
             return True, f"Créditos do pagamento {payment_id} já haviam sido aplicados anteriormente para o usuário '{user_found['username']}'."
 
         # Incrementar créditos
@@ -140,11 +160,13 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
         
         # Salva o id da última transação também para histórico simples
         user_found["id_transacao_pagamento"] = payment_id
+        logger.info(f"[Webhook-Handler] Creditando: {old_credits} -> {user_found['creditos_disponiveis']} creditos.")
 
         if save_users(users, db_lock):
-            logger.info(f"Sucesso: Adicionados {credits_to_add} créditos para o usuário '{user_found['username']}' (Transação: {payment_id})")
+            logger.info(f"[Webhook-Handler] Sucesso: Adicionados {credits_to_add} créditos para o usuário '{user_found['username']}' (Transação: {payment_id})")
             return True, f"Sucesso: Adicionados {credits_to_add} créditos para o usuário '{user_found['username']}'."
         else:
+            logger.error("[Webhook-Handler] Falha ao gravar usuarios atualizados no banco de dados!")
             return False, "Erro ao salvar alterações no banco de dados de usuários."
 
 def create_mercado_pago_preference(username: str, email: str, credits: int, price: float, access_token: str, back_url: str) -> str:

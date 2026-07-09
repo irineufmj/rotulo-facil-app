@@ -343,6 +343,15 @@ with st.sidebar:
         if st.button("Adquirir Créditos", type="primary", use_container_width=True):
             st.session_state.selected_page = "Meu Perfil"
             st.rerun()
+
+        # Botão discreto para atualizar o saldo e invalidar o cache local
+        if st.button("🔄 Atualizar Saldo", type="secondary", use_container_width=True):
+            try:
+                from utils.db import get_user_credits_cached
+                get_user_credits_cached.clear()
+            except Exception:
+                pass
+            st.rerun()
             
     # Bloco de Usuário no Rodapé (Estilo SaaS Premium)
     st.markdown("---")

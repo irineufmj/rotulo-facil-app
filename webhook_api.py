@@ -16,12 +16,15 @@ import hashlib
 import threading
 import logging
 import os
+import json as _json
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import JSONResponse
 from typing import Optional
 from utils.webhook_handler import process_mercado_pago_webhook
 
-logger = logging.getLogger(__name__)
+# Configuração básica de logging para o console
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("webhook_api")
 
 app = FastAPI(title="Rotulei App - Webhook API")
 
@@ -106,17 +109,31 @@ def verify_mp_signature(
       manifest = "id:{data.id};request-id:{x-request-id};ts:{ts};"
       signature = HMAC-SHA256(webhook_secret, manifest)
 
-    Referência: https://www.mercadopago.com.br/developers/pt/docs/your-integrations/notifications/webhooks
+    Nota de Segurança: data.id DEVE ser convertido para letras minúsculas (lowercase).
     """
+    logger.info(
+        f"[HMAC-Diag] Iniciando validacao: request_id='{request_id}', "
+        f"payload_id='{payload_id}', ts='{ts}', v1='{v1_signature[:10]}...'"
+    )
     if not webhook_secret:
+        logger.warning("[HMAC-Diag] Webhook secret nao configurado!")
         return False
-    manifest = f"id:{payload_id};request-id:{request_id};ts:{ts};"
+        
+    # Conversão obrigatória do ID do recurso para letras minúsculas
+    payload_id_lower = payload_id.lower()
+    manifest = f"id:{payload_id_lower};request-id:{request_id};ts:{ts};"
+    logger.info(f"[HMAC-Diag] Manifest reconstruido: '{manifest}'")
+    
     computed = hmac.new(
         webhook_secret.encode("utf-8"),
         manifest.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(computed, v1_signature)
+    logger.info(f"[HMAC-Diag] HMAC local computado: '{computed[:10]}...'")
+    
+    is_valid = hmac.compare_digest(computed, v1_signature)
+    logger.info(f"[HMAC-Diag] Resultado final da validacao: {is_valid}")
+    return is_valid
 
 
 def parse_x_signature(x_signature: str) -> dict:
@@ -160,19 +177,22 @@ async def mercado_pago_webhook(
     - Rejeita requisições com assinatura inválida com HTTP 401.
     - Consulta a API do Mercado Pago para confirmar o status real do pagamento.
     """
+    logger.info(f"[Webhook-API] Recebida notificacao. x-signature='{x_signature}', x-request-id='{x_request_id}'")
+
     # 1. Obter corpo da requisição
     try:
         body_bytes = await request.body()
-        import json as _json
         payload = _json.loads(body_bytes)
-    except Exception:
+        logger.info(f"[Webhook-API] Payload JSON decodificado: {payload}")
+    except Exception as e:
+        logger.error(f"[Webhook-API] Erro ao decodificar payload JSON: {e}")
         raise HTTPException(status_code=400, detail="Payload inválido ou não é JSON.")
 
     # 2. Validação de assinatura HMAC (se o secret estiver configurado)
     webhook_secret = get_mercado_pago_webhook_secret()
     if webhook_secret:
         if not x_signature:
-            logger.warning("Webhook recebido sem header x-signature. Requisição bloqueada.")
+            logger.warning("[Webhook-API] Requisicao bloqueada: Header x-signature ausente.")
             raise HTTPException(
                 status_code=401,
                 detail="Header x-signature ausente. Acesso não autorizado."
@@ -181,10 +201,18 @@ async def mercado_pago_webhook(
         sig_parts = parse_x_signature(x_signature)
         ts = sig_parts.get("ts", "")
         v1 = sig_parts.get("v1", "")
-        payload_id = str(payload.get("data", {}).get("id", ""))
+
+        # Fallback robusto para extração do ID de recurso no payload
+        payload_id = ""
+        if payload.get("data") and isinstance(payload.get("data"), dict):
+            payload_id = str(payload.get("data", {}).get("id", ""))
+        if not payload_id and payload.get("id"):
+            payload_id = str(payload.get("id", ""))
+        if not payload_id and payload.get("payment_id"):
+            payload_id = str(payload.get("payment_id", ""))
 
         if not ts or not v1:
-            logger.warning("Header x-signature malformado. Requisição bloqueada.")
+            logger.warning("[Webhook-API] Requisicao bloqueada: Header x-signature malformado.")
             raise HTTPException(
                 status_code=401,
                 detail="Assinatura malformada. Acesso não autorizado."
@@ -200,18 +228,17 @@ async def mercado_pago_webhook(
 
         if not is_valid:
             logger.warning(
-                f"Assinatura HMAC inválida para webhook payload_id={payload_id}. "
-                "Possível tentativa de forjamento de pagamento bloqueada."
+                f"[Webhook-API] Assinatura HMAC invalida para webhook payload_id={payload_id}. "
+                "Tentativa de forjamento bloqueada com HTTP 401."
             )
             raise HTTPException(
                 status_code=401,
                 detail="Assinatura inválida. Acesso não autorizado."
             )
     else:
-        # Modo de compatibilidade: sem secret configurado, apenas loga aviso
         logger.warning(
-            "ATENÇÃO: MERCADOPAGO_WEBHOOK_SECRET não configurado. "
-            "A validação HMAC está desabilitada. Configure o secret para segurança máxima."
+            "[Webhook-API] MERCADOPAGO_WEBHOOK_SECRET nao configurado. "
+            "A validacao HMAC esta desabilitada. Configure a chave secreta para seguranca maxima."
         )
 
     # 3. Processar o webhook após validação
@@ -221,10 +248,12 @@ async def mercado_pago_webhook(
         access_token=MERCADO_PAGO_ACCESS_TOKEN
     )
 
+    logger.info(f"[Webhook-API] Resultado do processamento: success={success}, msg='{message}'")
+
     if success:
         return JSONResponse(status_code=200, content={"status": "success", "message": message})
     else:
-        # Retorna 200 para o Mercado Pago não reenviar em casos de negócio esperados
+        # Retorna 200 para o Mercado Pago não reenviar em casos de negócio normais
         # (ex: status "pending" ou pagamento já processado)
         return JSONResponse(status_code=200, content={"status": "ignored", "message": message})
 
