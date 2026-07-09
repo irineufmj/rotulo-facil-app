@@ -67,10 +67,10 @@ def load_unified_data():
         
     return foods
 
-def load_saved_recipes(db_lock):
+def load_saved_recipes(db_lock, username=None):
     from utils.db import is_sql_configured, load_recipes_sql, save_recipe_sql
     if is_sql_configured():
-        recipes = load_recipes_sql(db_lock)
+        recipes = load_recipes_sql(db_lock, username)
         
         # Migração automática: Se o banco SQL estiver vazio de receitas e existir o arquivo local JSON com receitas,
         # migramos as receitas locais para o banco SQL.
@@ -80,7 +80,7 @@ def load_saved_recipes(db_lock):
                     local_recipes = json.load(f)
                 for lr in local_recipes:
                     save_recipe_sql(lr["nome"], lr, db_lock)
-                recipes = load_recipes_sql(db_lock)
+                recipes = load_recipes_sql(db_lock, username)
                 logger.info("Migração automática de receitas locais para o banco SQL realizada com sucesso!")
             except Exception as mig_err:
                 logger.error(f"Erro na migração automática de receitas para SQL: {mig_err}", exc_info=True)
@@ -91,7 +91,10 @@ def load_saved_recipes(db_lock):
             return []
         try:
             with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                all_recipes = json.load(f)
+            if username:
+                return [r for r in all_recipes if r.get("username", "") == "" or r.get("username", "").lower() == username.lower()]
+            return all_recipes
         except Exception as e:
             logger.error(f"Erro ao carregar receitas salvas: {e}", exc_info=True)
             st.error(f"Erro ao carregar receitas salvas: {e}")

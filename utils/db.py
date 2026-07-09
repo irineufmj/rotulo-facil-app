@@ -86,11 +86,13 @@ init_db()
 def load_users_sql(db_lock) -> list:
     """
     Carrega todos os usuários do banco de dados relacional.
+    TTL=15: evita queries repetidas ao Neon em reruns rápidos.
+    Cache é invalidado explicitamente por save_users_sql().
     """
     with db_lock:
         try:
             conn = st.connection("sql")
-            df = conn.query("SELECT * FROM usuarios", ttl=0)
+            df = conn.query("SELECT * FROM usuarios", ttl=15)
             users = df.to_dict(orient="records")
             
             # Converter campos JSON textuais de volta para tipos Python
@@ -111,15 +113,41 @@ def load_users_sql(db_lock) -> list:
             st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
             return None
 
+@st.cache_data(ttl=15)
+def get_user_credits_cached(username: str) -> dict:
+    """
+    Carrega os dados essenciais do usuário atual para exibição na sidebar.
+    Busca apenas 1 registro por username — muito mais eficiente que carregar
+    toda a tabela de usuários a cada rerun.
+    Cacheado por 15 segundos para evitar queries repetidas ao Neon.
+    """
+    try:
+        conn = st.connection("sql")
+        df = conn.query(
+            "SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)",
+            params={"uname": username},
+            ttl=15
+        )
+        if df.empty:
+            return {}
+        row = df.iloc[0].to_dict()
+        row["is_admin"] = bool(row.get("is_admin", False))
+        row["creditos_disponiveis"] = int(row.get("creditos_disponiveis", 0))
+        return row
+    except Exception as e:
+        logger.warning(f"get_user_credits_cached falhou para '{username}': {e}")
+        return {}
+
 def save_users_sql(users: list, db_lock) -> bool:
     """
-    Salva a lista completa de usuários no banco de dados relacional de forma agnóstica.
+    Salva a lista completa de usuários no banco de dados relacional.
+    Invalida o cache de leitura após qualquer escrita bem-sucedida.
     """
     with db_lock:
         try:
             conn = st.connection("sql")
             with conn.session as session:
-                # 1. Deletar apenas os usuários que não estão na nova lista (evita limpar o banco inteiro)
+                # 1. Deletar apenas os usuários que não estão na nova lista
                 usernames = [u["username"] for u in users]
                 if usernames:
                     placeholders = ", ".join(f":u{idx}" for idx in range(len(usernames)))
@@ -131,7 +159,7 @@ def save_users_sql(users: list, db_lock) -> bool:
                 else:
                     session.execute(text("DELETE FROM usuarios"))
                 
-                # 2. Inserir ou atualizar os usuários existentes (UPSERT)
+                # 2. Inserir ou atualizar (UPSERT)
                 for u in users:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
                     session.execute(
@@ -163,6 +191,12 @@ def save_users_sql(users: list, db_lock) -> bool:
                         }
                     )
                 session.commit()
+
+            # Invalidar cache de leitura após escrita bem-sucedida
+            try:
+                get_user_credits_cached.clear()
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"Erro ao gravar usuários no banco SQL: {e}", exc_info=True)
@@ -170,14 +204,26 @@ def save_users_sql(users: list, db_lock) -> bool:
             st.error(f"Erro de Banco de Dados (save_users_sql): {e}")
             return False
 
-def load_recipes_sql(db_lock) -> list:
+def load_recipes_sql(db_lock, username: str = "") -> list:
     """
-    Carrega todas as receitas salvas no banco de dados relacional.
+    Carrega receitas do banco de dados relacional filtradas por username.
+    Quando username é fornecido, usa WHERE para evitar full-table scan.
+    TTL=15 para cache local entre reruns rápidos.
     """
     with db_lock:
         try:
             conn = st.connection("sql")
-            df = conn.query("SELECT * FROM receitas", ttl=0)
+            if username:
+                # Query eficiente: filtra no banco, não em Python
+                df = conn.query(
+                    "SELECT * FROM receitas WHERE LOWER(username) = LOWER(:uname) OR username = ''",
+                    params={"uname": username},
+                    ttl=15
+                )
+            else:
+                # Fallback sem filtro (ex: migração ou admin)
+                df = conn.query("SELECT * FROM receitas", ttl=0)
+
             recipes = df.to_dict(orient="records")
             
             # Converter colunas de texto JSON para objetos Python

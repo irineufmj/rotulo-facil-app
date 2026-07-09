@@ -77,6 +77,29 @@ def validate_cpf(cpf_str):
         
     return True
 
+def hash_cpf(cpf_str: str) -> str:
+    """
+    Gera um hash criptográfico SHA-256 para o CPF usando um salt para proteger a privacidade (LGPD).
+    O salt é configurado via st.secrets para consistência, ou usa um fallback seguro.
+    """
+    cpf_digits = ''.join(filter(str.isdigit, cpf_str))
+    if not cpf_digits:
+        return ""
+    salt = ""
+    try:
+        salt = st.secrets.get("CPF_SALT", "")
+    except Exception:
+        pass
+    if not salt:
+        salt = os.environ.get("CPF_SALT", "rotulei_app_secure_cpf_salt_2026")
+    return hashlib.sha256((cpf_digits + salt).encode('utf-8')).hexdigest()
+
+def is_hashed_cpf(cpf_str: str) -> bool:
+    """
+    Verifica se a string fornecida já é um hash SHA-256 válido (64 caracteres hexadecimais).
+    """
+    return len(cpf_str) == 64 and all(c in '0123456789abcdefABCDEF' for c in cpf_str)
+
 def load_users(db_lock):
     from utils.db import is_sql_configured, load_users_sql, save_users_sql
     if is_sql_configured():
@@ -103,13 +126,23 @@ def load_users(db_lock):
             except Exception as mig_err:
                 logger.error(f"Erro na migração automática de usuários para SQL: {mig_err}", exc_info=True)
 
+        # Hashing de CPFs antigos no banco SQL (LGPD)
+        migrated_cpf = False
+        for u in users:
+            cpf_val = u.get("cpf", "")
+            if cpf_val and not is_hashed_cpf(cpf_val):
+                u["cpf"] = hash_cpf(cpf_val)
+                migrated_cpf = True
+        if migrated_cpf:
+            save_users_sql(users, db_lock)
+
         has_admin = any(u.get("is_admin", False) for u in users)
         if not has_admin:
             admin_pwd = get_default_admin_password()
             default_admin = {
                 "username": "admin",
                 "email": "admin@rotulofacil.com",
-                "cpf": "00000000000",
+                "cpf": hash_cpf("00000000000"),
                 "password_hash": hash_password(admin_pwd),
                 "is_admin": True,
                 "creditos_disponiveis": 9999,
@@ -124,6 +157,7 @@ def load_users(db_lock):
                 for u in users:
                     if u["username"].lower() == "admin":
                         u["is_admin"] = True
+                        u["cpf"] = hash_cpf("00000000000")
                         break
             save_users_sql(users, db_lock)
         return users
@@ -138,7 +172,7 @@ def load_users(db_lock):
                 logger.error(f"Erro ao carregar usuários: {e}", exc_info=True)
                 st.error(f"Erro ao carregar usuários: {e}")
                 
-        # Migração / Sanitização: Garantir creditos_disponiveis e transacoes_processadas
+        # Migração / Sanitização: Garantir creditos_disponiveis, transacoes_processadas e CPF hash
         migrated = False
         for u in users:
             if "fim_acesso" in u:
@@ -153,6 +187,11 @@ def load_users(db_lock):
             if "transacoes_processadas" not in u:
                 u["transacoes_processadas"] = []
                 migrated = True
+            # Hashing CPF para LGPD
+            cpf_val = u.get("cpf", "")
+            if cpf_val and not is_hashed_cpf(cpf_val):
+                u["cpf"] = hash_cpf(cpf_val)
+                migrated = True
         if migrated:
             safe_save_json(USERS_JSON_PATH, users)
                 
@@ -162,7 +201,7 @@ def load_users(db_lock):
             default_admin = {
                 "username": "admin",
                 "email": "admin@rotulofacil.com",
-                "cpf": "00000000000",
+                "cpf": hash_cpf("00000000000"),
                 "password_hash": hash_password(admin_pwd),
                 "is_admin": True,
                 "creditos_disponiveis": 9999,
@@ -177,6 +216,7 @@ def load_users(db_lock):
                 for u in users:
                     if u["username"].lower() == "admin":
                         u["is_admin"] = True
+                        u["cpf"] = hash_cpf("00000000000")
                         break
             safe_save_json(USERS_JSON_PATH, users)
             
@@ -230,20 +270,22 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
     if len(password) < 8:
         return False, "A senha deve conter pelo menos 8 caracteres."
         
+    hashed_cpf = hash_cpf(cpf_digits)
     users = load_users(db_lock)
     for u in users:
         if u["username"].lower() == username_clean.lower():
             return False, "Este nome de usuário já está em uso."
         if u.get("email", "").lower() == email_clean.lower():
             return False, "Este endereço de e-mail já está cadastrado."
-        db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
-        if db_cpf == cpf_digits:
+        db_cpf = u.get("cpf", "")
+        # Suporta verificação de duplicidade com CPF criptografado ou texto claro legado
+        if db_cpf == hashed_cpf or db_cpf == cpf_digits:
             return False, "Este CPF já está cadastrado em outra conta."
             
     new_user = {
         "username": username_clean,
         "email": email_clean,
-        "cpf": cpf_digits,
+        "cpf": hashed_cpf,
         "password_hash": hash_password(password),
         "is_admin": False,
         "creditos_disponiveis": 1,
@@ -322,10 +364,25 @@ def admin_delete_user(username_to_delete, db_lock):
         if len(new_users) == len(users):
             return False, "Usuário não encontrado."
             
-        if safe_save_json(USERS_JSON_PATH, new_users):
-            recipes = load_saved_recipes(db_lock)
-            new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
-            safe_save_json(RECIPES_JSON_PATH, new_recipes)
+        # Roteamento seguro pelo save_users() que verifica SQL/JSON
+        if save_users(new_users, db_lock):
+            from utils.db import is_sql_configured
+            from sqlalchemy import text
+            if is_sql_configured():
+                try:
+                    conn = st.connection("sql")
+                    with conn.session as session:
+                        session.execute(
+                            text("DELETE FROM receitas WHERE LOWER(username) = LOWER(:username)"),
+                            {"username": username_clean}
+                        )
+                        session.commit()
+                except Exception as e:
+                    logger.error(f"Erro ao deletar receitas do usuario deletado do banco SQL: {e}")
+            else:
+                recipes = load_saved_recipes(db_lock)
+                new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
+                safe_save_json(RECIPES_JSON_PATH, new_recipes)
             return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
             
         return False, "Erro ao atualizar banco de dados de usuários."
@@ -336,16 +393,21 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
     new_email_clean = new_email.strip()
     new_cpf_digits = ''.join(filter(str.isdigit, new_cpf))
     
+    # Se new_cpf contém asteriscos ou é vazio, significa que não foi alterado
+    cpf_not_changed = ("*" in new_cpf or not new_cpf_digits)
+    
     if not new_username_clean:
         return False, "O nome de usuário não pode ser vazio."
         
     if not EMAIL_RE.match(new_email_clean):
         return False, "Por favor, informe um endereço de e-mail válido."
         
-    if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
-        return False, "Por favor, informe um CPF válido."
+    if not cpf_not_changed:
+        if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
+            return False, "Por favor, informe um CPF válido."
         
     with db_lock:
+        new_hashed_cpf = hash_cpf(new_cpf_digits) if not cpf_not_changed else None
         users = load_users(db_lock)
         for u in users:
             u_name = u["username"].strip().lower()
@@ -356,16 +418,20 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
                 return False, "Este nome de usuário já está em uso por outra conta."
             if u.get("email", "").strip().lower() == new_email_clean.lower():
                 return False, "Este endereço de e-mail já está cadastrado em outra conta."
-            db_cpf = ''.join(filter(str.isdigit, u.get("cpf", "")))
-            if db_cpf == new_cpf_digits:
-                return False, "Este CPF já está cadastrado em outra conta."
+            
+            # Validação de CPF único com comparação de hashes
+            if not cpf_not_changed and new_hashed_cpf:
+                db_cpf = u.get("cpf", "")
+                if db_cpf == new_hashed_cpf or db_cpf == new_cpf_digits:
+                    return False, "Este CPF já está cadastrado em outra conta."
                 
         updated = False
         for u in users:
             if u["username"].strip().lower() == old_clean:
                 u["username"] = new_username_clean
                 u["email"] = new_email_clean
-                u["cpf"] = new_cpf_digits
+                if not cpf_not_changed and new_hashed_cpf:
+                    u["cpf"] = new_hashed_cpf
                 u["is_admin"] = is_admin_val
                 if creditos_val is not None:
                     u["creditos_disponiveis"] = int(creditos_val)
@@ -379,13 +445,28 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
         if not updated:
             return False, "Usuário de origem não encontrado."
             
-        if safe_save_json(USERS_JSON_PATH, users):
+        # Roteamento seguro pelo save_users() que verifica SQL/JSON
+        if save_users(users, db_lock):
             if old_clean != new_username_clean.lower():
-                recipes = load_saved_recipes(db_lock)
-                for r in recipes:
-                    if r.get("username", "").strip().lower() == old_clean:
-                        r["username"] = new_username_clean
-                safe_save_json(RECIPES_JSON_PATH, recipes)
+                from utils.db import is_sql_configured
+                from sqlalchemy import text
+                if is_sql_configured():
+                    try:
+                        conn = st.connection("sql")
+                        with conn.session as session:
+                            session.execute(
+                                text("UPDATE receitas SET username = :new_username WHERE LOWER(username) = LOWER(:old_username)"),
+                                {"new_username": new_username_clean, "old_username": old_clean}
+                            )
+                            session.commit()
+                    except Exception as e:
+                        logger.error(f"Erro ao atualizar receitas no SQL: {e}")
+                else:
+                    recipes = load_saved_recipes(db_lock)
+                    for r in recipes:
+                        if r.get("username", "").strip().lower() == old_clean:
+                            r["username"] = new_username_clean
+                    safe_save_json(RECIPES_JSON_PATH, recipes)
             return True, "Cadastro do usuário atualizado com sucesso!"
             
         return False, "Erro ao gravar alterações no banco de dados."

@@ -262,8 +262,8 @@ with st.sidebar:
             st.rerun()
     
     # 2. Exibição do Saldo (Estilo SaaS Premium)
-    all_users_side = load_users(db_lock)
-    current_user_side = next((u for u in all_users_side if u["username"].lower() == st.session_state.username.lower()), None)
+    from utils.db import get_user_credits_cached
+    current_user_side = get_user_credits_cached(st.session_state.username)
     
     st.markdown("---")
     if st.session_state.get("is_admin", False):
@@ -1097,8 +1097,8 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
             pdf_data = create_pdf()
             
             # Checagem de créditos para liberação do PDF
-            all_users_pdf = load_users(db_lock)
-            current_user_pdf = next((u for u in all_users_pdf if u["username"].lower() == st.session_state.username.lower()), None)
+            from utils.db import get_user_credits_cached
+            current_user_pdf = get_user_credits_cached(st.session_state.username)
             is_admin_pdf = current_user_pdf.get("is_admin", False) if current_user_pdf else False
             creditos_disponiveis = current_user_pdf.get("creditos_disponiveis", 0) if current_user_pdf else 0
             
@@ -1233,9 +1233,7 @@ if st.session_state.selected_page == "Minhas Receitas Salvas":
     st.markdown("Consulte, carregue ou remova receitas salvas localmente no banco de dados do aplicativo.")
     
     current_username = st.session_state.get("username", "")
-    all_recipes = load_saved_recipes(db_lock)
-    # Filtrar para exibir apenas receitas públicas/legadas ou do usuário logado
-    saved_recipes = [r for r in all_recipes if r.get("username", "") == "" or r.get("username", "").lower() == current_username.lower()]
+    saved_recipes = load_saved_recipes(db_lock, current_username)
     
     if not saved_recipes:
         st.info("Nenhuma receita salva encontrada. Monte uma receita e clique em 'Salvar Receita' para salvá-la aqui.")
@@ -1438,15 +1436,19 @@ if st.session_state.selected_page == "Meu Perfil":
         with st.form('form_meu_perfil'):
             edit_email = st.text_input('E-mail:', value=user_data.get('email', ''))
             
-            # Formatar CPF atual
+            # Formatar CPF atual (se for hash, exibe mascarado por privacidade)
             c = user_data.get('cpf', '')
-            c_digits = ''.join(filter(str.isdigit, c))
-            if len(c_digits) == 11:
-                cpf_display = f'{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}'
+            from utils.auth import is_hashed_cpf
+            if is_hashed_cpf(c):
+                cpf_display = "***.***.***-**"
             else:
-                cpf_display = c
+                c_digits = ''.join(filter(str.isdigit, c))
+                if len(c_digits) == 11:
+                    cpf_display = f'{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}'
+                else:
+                    cpf_display = c
                 
-            edit_cpf = st.text_input('CPF:', value=cpf_display)
+            edit_cpf = st.text_input('CPF (Edite apenas se for alterar):', value=cpf_display)
             edit_pass = st.text_input('Nova Senha (deixe em branco para manter a atual):', type='password')
             edit_pass_confirm = st.text_input('Confirme a Nova Senha:', type='password')
             
