@@ -119,13 +119,69 @@ if "product_type" not in st.session_state:
 
 # --- LOGIN / CADASTRO FLOW ---
 if not st.session_state.logged_in:
+    # CSS injetado específico para a tela de login (foco no 'Above the Fold')
+    st.markdown("""
+        <style>
+        /* Reduzir padding do container principal apenas no login */
+        .block-container {
+            padding-top: 1.2rem !important;
+            padding-bottom: 1rem !important;
+        }
+        
+        /* Centralizar e limitar tamanho do logo */
+        div[data-testid="stImage"] > img {
+            margin: 0 auto !important;
+            display: block !important;
+            max-width: 250px !important;
+            max-height: 80px !important;
+            object-fit: contain !important;
+        }
+        
+        /* Compactar o título alternativo caso o logo não carregue */
+        .main-title {
+            font-size: 1.8rem !important;
+            margin-top: 5px !important;
+            margin-bottom: 2px !important;
+            text-align: center !important;
+        }
+        
+        /* Compactar subtítulo e margens descritivas */
+        .subtitle {
+            font-size: 0.85rem !important;
+            margin-top: 2px !important;
+            margin-bottom: 12px !important;
+            text-align: center !important;
+            line-height: 1.3 !important;
+        }
+        
+        /* Otimizar espaçamentos do formulário e das abas */
+        div[data-testid="stTabBar"] {
+            margin-bottom: 5px !important;
+        }
+        div[data-testid="stForm"] {
+            padding: 15px 20px !important;
+            border-radius: 12px !important;
+        }
+        div[data-testid="stForm"] input {
+            padding: 8px 12px !important;
+        }
+        div[data-testid="stForm"] label {
+            font-size: 0.85rem !important;
+            margin-bottom: 2px !important;
+        }
+        div[data-testid="element-container"] {
+            margin-bottom: 6px !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # Criar uma caixa centralizada com colunas
     col_left, col_center, col_right = st.columns([1, 1.3, 1])
     
     with col_center:
         # Inserção do logotipo oficial centralizado no topo
         if os.path.exists("assets/logo.jpg"):
-            st.image("assets/logo.jpg", use_container_width=True)
+            st.image("assets/logo.jpg", width=250)
         else:
             st.markdown('<h1 class="main-title" style="text-align: center; font-size: 2.2rem; margin-top: 10px;">Rotulei App</h1>', unsafe_allow_html=True)
             
