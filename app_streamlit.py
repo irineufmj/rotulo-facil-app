@@ -340,41 +340,64 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
         )
         
         filtered_for_recipe = []
-        q = search_query.lower().strip()
+        q = search_query.strip()
         if q:
-            # Filtrar ingredientes que contêm o termo buscado
-
+            import unicodedata
+            def normalize_str(s):
+                if not s:
+                    return ""
+                nfkd = unicodedata.normalize('NFKD', s)
+                return "".join([c for c in nfkd if not unicodedata.combining(c)]).lower()
+                
+            q_norm = normalize_str(q)
+            q_words = [w for w in q_norm.split() if w]
+            
             from utils.data_loader import get_recipes_as_ingredients
             curr_user = st.session_state.get("username", "")
             sub_recipes = get_recipes_as_ingredients(db_lock, curr_user)
             dynamic_foods = foods_data + sub_recipes
-            matched_foods = [f for f in dynamic_foods if q in f["d"].lower() or q in f["c"].lower()]
+            
+            if q_words:
+                matched_foods = []
+                for f in dynamic_foods:
+                    desc_norm = normalize_str(f["d"])
+                    code_norm = normalize_str(f["c"])
+                    match = True
+                    for word in q_words:
+                        if word not in desc_norm and word not in code_norm:
+                            match = False
+                            break
+                    if match:
+                        matched_foods.append(f)
+            else:
+                matched_foods = []
             
             # Função de cálculo de score de relevância (menor score = maior prioridade)
             def get_match_score(food):
-                desc = food["d"].lower()
-                code = food["c"].lower()
+                desc = normalize_str(food["d"])
+                code = normalize_str(food["c"])
                 
                 # 1. Correspondência exata de código
-                if code == q:
+                if code == q_norm:
                     return (0, 0, 0, len(desc))
                     
-                # 2. Correspondência na descrição
-                pos = desc.find(q)
+                # 2. Correspondência exata da string de busca inteira na descrição
+                pos = desc.find(q_norm)
                 if pos >= 0:
                     is_start = 0 if pos == 0 else 1
-                    # Verificar se o termo é uma palavra inteira (fronteira de palavra)
                     before_char_ok = (pos == 0 or not desc[pos-1].isalnum())
-                    after_char_ok = (pos + len(q) == len(desc) or not desc[pos + len(q)].isalnum())
+                    after_char_ok = (pos + len(q_norm) == len(desc) or not desc[pos + len(q_norm)].isalnum())
                     word_boundary = 0 if (before_char_ok and after_char_ok) else 1
-                    
                     return (1, is_start, word_boundary, pos, len(desc))
                     
-                # 3. Correspondência parcial de código
-                pos_code = code.find(q)
-                if pos_code >= 0:
-                    return (2, 0, 0, pos_code, len(desc))
-                    
+                # 3. Correspondência da primeira palavra na descrição
+                if q_words:
+                    first_word = q_words[0]
+                    pos_first = desc.find(first_word)
+                    if pos_first >= 0:
+                        is_start = 0 if pos_first == 0 else 1
+                        return (2, is_start, 0, pos_first, len(desc))
+                        
                 return (3, 0, 0, 0, len(desc))
                 
             # Ordenar os resultados por relevância
@@ -1241,6 +1264,7 @@ if st.session_state.selected_page == "Minhas Receitas Salvas":
                     st.session_state.nome_produto = recipe.get("nome_produto", "")
                     st.session_state.peso_embalagem = float(recipe.get("peso_embalagem", 0.0))
                     st.session_state.calculated = True
+                    st.session_state.selected_page = "Calculadora & Rótulo"
                     st.toast(f"Receita **{selected_name}** carregada com sucesso!")
                     st.rerun()
                     
@@ -1260,6 +1284,7 @@ if st.session_state.selected_page == "Minhas Receitas Salvas":
                     st.session_state.nome_produto = recipe.get("nome_produto", "") + " (Cópia)"
                     st.session_state.peso_embalagem = float(recipe.get("peso_embalagem", 0.0))
                     st.session_state.calculated = True
+                    st.session_state.selected_page = "Calculadora & Rótulo"
                     st.toast(f"Cópia da receita pronta para edição!")
                     st.rerun()
             with col_del:
