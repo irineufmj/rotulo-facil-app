@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import traceback
+import urllib.parse
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
+_db_initialized = False
 
 def log_db_error(msg: str, e: Exception):
     try:
@@ -22,68 +24,13 @@ def log_db_error(msg: str, e: Exception):
         logger.error(f"Erro ao gravar log local de erro: {log_ex}")
 
 
-def get_db_engine():
+def init_db_safe(engine):
     """
-    Retorna ou inicializa o engine do SQLAlchemy.
-    Suporta leitura a partir de:
-    1. Variável de ambiente DATABASE_URL
-    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"])
-    3. Leitura direta de .streamlit/secrets.toml (fallback local)
+    Inicializa as tabelas do banco de dados relacional se ainda não inicializadas.
+    Não lança exceções para fora para evitar quebras no carregamento de módulos.
     """
-    global _db_engine
-    if _db_engine is not None:
-        return _db_engine
-
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        try:
-            db_url = st.secrets["connections"]["sql"]["url"]
-        except Exception:
-            pass
-
-    if not db_url:
-        try:
-            import re
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
-            if os.path.exists(secrets_path):
-                with open(secrets_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                match = re.search(r'url\s*=\s*["\']([^"\']+)["\']', content)
-                if match:
-                    db_url = match.group(1).strip()
-        except Exception:
-            pass
-
-    if db_url:
-        # PostgreSQL requer prefixo postgresql:// no SQLAlchemy 1.4+
-        if db_url.startswith("postgres://"):
-            db_url = db_url.replace("postgres://", "postgresql://", 1)
-        
-        logger.info("[Database] Inicializando engine SQLAlchemy...")
-        try:
-            _db_engine = create_engine(db_url, pool_pre_ping=True)
-            return _db_engine
-        except Exception as e:
-            logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
-            
-    return None
-
-
-def is_sql_configured() -> bool:
-    """
-    Retorna True se houver uma configuração de banco de dados SQL ativa.
-    """
-    return get_db_engine() is not None
-
-
-def init_db():
-    """
-    Inicializa as tabelas do banco de dados relacional se estiver configurado.
-    """
-    engine = get_db_engine()
-    if not engine:
-        logger.warning("[Database] Conexão SQL não configurada. Tabelas não inicializadas.")
+    global _db_initialized
+    if _db_initialized:
         return
         
     try:
@@ -107,7 +54,7 @@ def init_db():
             # Migração de coluna: Altera cpf para VARCHAR(255) caso a tabela já existisse como VARCHAR(20)
             try:
                 conn.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
-            except Exception as alter_err:
+            except Exception:
                 pass
             
             # Tabela de Receitas
@@ -132,15 +79,108 @@ def init_db():
             )
             """))
             
+        _db_initialized = True
         logger.info("[Database] Tabelas SQL verificadas/inicializadas com sucesso.")
     except Exception as e:
-        logger.error(f"Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
+        logger.error(f"[Database] Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
         log_db_error("init_db_error", e)
-        st.error(f"Erro de Conexão com o Banco de Dados (init_db): {e}")
 
 
-# Inicializar tabelas em tempo de import
-init_db()
+def get_db_engine():
+    """
+    Retorna ou inicializa o engine do SQLAlchemy.
+    Suporta leitura a partir de:
+    1. Variável de ambiente DATABASE_URL
+    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"])
+    3. Construção da URL de st.secrets["connections"]["sql"] (host, username, password...)
+    4. Leitura direta de .streamlit/secrets.toml (fallback local)
+    """
+    global _db_engine
+    if _db_engine is not None:
+        return _db_engine
+
+    db_url = os.environ.get("DATABASE_URL")
+    
+    if not db_url:
+        try:
+            # 1. Tentar ler URL direta em st.secrets
+            if "connections" in st.secrets and "sql" in st.secrets["connections"]:
+                sql_secrets = st.secrets["connections"]["sql"]
+                if "url" in sql_secrets:
+                    db_url = sql_secrets["url"]
+                else:
+                    # 2. Construir URL a partir de parâmetros individuais em st.secrets
+                    dialect = sql_secrets.get("dialect", "postgresql")
+                    username = sql_secrets.get("username", "")
+                    password = sql_secrets.get("password", "")
+                    host = sql_secrets.get("host", "")
+                    port = sql_secrets.get("port", "5432")
+                    database = sql_secrets.get("database", "")
+                    
+                    safe_username = urllib.parse.quote_plus(str(username)) if username else ""
+                    safe_password = urllib.parse.quote_plus(str(password)) if password else ""
+                    
+                    if host and database:
+                        db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
+        except Exception:
+            pass
+
+    if not db_url:
+        try:
+            # 3. Fallback: Ler do secrets.toml diretamente usando expressão regular
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
+            if os.path.exists(secrets_path):
+                with open(secrets_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                
+                # Tentar achar chave url
+                import re
+                match_url = re.search(r'url\s*=\s*["\']([^"\']+)["\']', content)
+                if match_url:
+                    db_url = match_url.group(1).strip()
+                else:
+                    # Tentar achar parâmetros individuais
+                    def get_toml_val(key):
+                        m = re.search(fr'{key}\s*=\s*["\']([^"\']+)["\']', content)
+                        return m.group(1).strip() if m else ""
+                    
+                    host = get_toml_val("host")
+                    database = get_toml_val("database")
+                    if host and database:
+                        dialect = get_toml_val("dialect") or "postgresql"
+                        username = get_toml_val("username")
+                        password = get_toml_val("password")
+                        port = get_toml_val("port") or "5432"
+                        
+                        safe_username = urllib.parse.quote_plus(str(username)) if username else ""
+                        safe_password = urllib.parse.quote_plus(str(password)) if password else ""
+                        db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
+        except Exception:
+            pass
+
+    if db_url:
+        # PostgreSQL requer prefixo postgresql:// no SQLAlchemy 1.4+
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+        logger.info("[Database] Inicializando engine SQLAlchemy...")
+        try:
+            _db_engine = create_engine(db_url, pool_pre_ping=True)
+            # Inicializar tabelas de forma segura e tardia (lazy)
+            init_db_safe(_db_engine)
+            return _db_engine
+        except Exception as e:
+            logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
+            
+    return None
+
+
+def is_sql_configured() -> bool:
+    """
+    Retorna True se houver uma configuração de banco de dados SQL ativa.
+    """
+    return get_db_engine() is not None
 
 
 def load_users_sql(db_lock) -> list:
@@ -175,16 +215,26 @@ def load_users_sql(db_lock) -> list:
             return None
 
 
-@st.cache_data(ttl=15)
 def get_user_credits_cached(username: str) -> dict:
     """
     Carrega os dados essenciais do usuário atual para exibição na sidebar.
-    Busca apenas 1 registro por username.
+    Utiliza cache do Streamlit condicionalmente se estiver rodando dentro do Streamlit.
     """
+    # Decoramos de forma dinâmica para evitar erros de importação fora do Streamlit
+    from streamlit.runtime import exists
+    if exists():
+        @st.cache_data(ttl=15)
+        def _cached_fetch(uname: str):
+            return _fetch_user_credits(uname)
+        return _cached_fetch(username)
+    else:
+        return _fetch_user_credits(username)
+
+
+def _fetch_user_credits(username: str) -> dict:
     engine = get_db_engine()
     if not engine:
         return {}
-        
     try:
         df = pd.read_sql(
             text("SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)"),
@@ -260,7 +310,9 @@ def save_users_sql(users: list, db_lock) -> bool:
 
             # Invalidar cache de leitura após escrita bem-sucedida
             try:
-                get_user_credits_cached.clear()
+                from streamlit.runtime import exists
+                if exists():
+                    get_user_credits_cached.clear()
             except Exception:
                 pass
             return True
