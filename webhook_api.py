@@ -164,6 +164,7 @@ except ValueError as e:
 
 
 @app.post("/webhooks/mercadopago")
+@app.post("/webhooks/mercadopago/")
 async def mercado_pago_webhook(
     request: Request,
     x_signature: Optional[str] = Header(None, alias="x-signature"),
@@ -174,67 +175,87 @@ async def mercado_pago_webhook(
 
     Segurança:
     - Valida assinatura HMAC-SHA256 via header x-signature (quando MERCADOPAGO_WEBHOOK_SECRET estiver configurado).
-    - Rejeita requisições com assinatura inválida com HTTP 401.
+    - Rejeita requisições com assinatura inválida com HTTP 401 (apenas para pagamentos legítimos).
     - Consulta a API do Mercado Pago para confirmar o status real do pagamento.
     """
     logger.info(f"[Webhook-API] Recebida notificacao. x-signature='{x_signature}', x-request-id='{x_request_id}'")
 
-    # 1. Obter corpo da requisição
+    # 1. Obter corpo da requisição de forma resiliente
+    body_bytes = b""
     try:
         body_bytes = await request.body()
         payload = _json.loads(body_bytes)
-        logger.info(f"[Webhook-API] Payload JSON decodificado: {payload}")
+        logger.info(f"[Webhook-API] Payload JSON decodificado com sucesso: {payload}")
     except Exception as e:
-        logger.error(f"[Webhook-API] Erro ao decodificar payload JSON: {e}")
-        raise HTTPException(status_code=400, detail="Payload inválido ou não é JSON.")
+        logger.error(f"[Webhook-API] Erro ao decodificar payload JSON: {e}. Raw Bytes: {body_bytes}")
+        raise HTTPException(status_code=400, detail=f"Payload inválido ou não é JSON: {e}")
+
+    # Detectar se é uma notificação de pagamento legítima (para forçar validação de assinatura)
+    is_payment = (
+        payload.get("type") == "payment" 
+        or payload.get("action", "").startswith("payment.")
+        or "payment_id" in payload
+    )
 
     # 2. Validação de assinatura HMAC (se o secret estiver configurado)
     webhook_secret = get_mercado_pago_webhook_secret()
     if webhook_secret:
         if not x_signature:
-            logger.warning("[Webhook-API] Requisicao bloqueada: Header x-signature ausente.")
-            raise HTTPException(
-                status_code=401,
-                detail="Header x-signature ausente. Acesso não autorizado."
-            )
+            if is_payment:
+                logger.warning("[Webhook-API] Requisicao de pagamento bloqueada: Header x-signature ausente.")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Header x-signature ausente. Acesso não autorizado."
+                )
+            else:
+                logger.info("[Webhook-API] Evento de teste/mp-connect recebido sem assinatura. Ignorado com sucesso.")
+        else:
+            sig_parts = parse_x_signature(x_signature)
+            ts = sig_parts.get("ts", "")
+            v1 = sig_parts.get("v1", "")
 
-        sig_parts = parse_x_signature(x_signature)
-        ts = sig_parts.get("ts", "")
-        v1 = sig_parts.get("v1", "")
+            # Fallback robusto para extração do ID de recurso no payload
+            payload_id = ""
+            if payload.get("data") and isinstance(payload.get("data"), dict):
+                payload_id = str(payload.get("data", {}).get("id", ""))
+            if not payload_id and payload.get("id"):
+                payload_id = str(payload.get("id", ""))
+            if not payload_id and payload.get("payment_id"):
+                payload_id = str(payload.get("payment_id", ""))
 
-        # Fallback robusto para extração do ID de recurso no payload
-        payload_id = ""
-        if payload.get("data") and isinstance(payload.get("data"), dict):
-            payload_id = str(payload.get("data", {}).get("id", ""))
-        if not payload_id and payload.get("id"):
-            payload_id = str(payload.get("id", ""))
-        if not payload_id and payload.get("payment_id"):
-            payload_id = str(payload.get("payment_id", ""))
+            if not ts or not v1:
+                if is_payment:
+                    logger.warning("[Webhook-API] Requisicao de pagamento bloqueada: Header x-signature malformado.")
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Assinatura malformada. Acesso não autorizado."
+                    )
+                else:
+                    logger.info("[Webhook-API] Assinatura malformada em evento de teste (ignorado com sucesso).")
+            else:
+                is_valid = verify_mp_signature(
+                    request_id=x_request_id or "",
+                    payload_id=payload_id,
+                    ts=ts,
+                    v1_signature=v1,
+                    webhook_secret=webhook_secret
+                )
 
-        if not ts or not v1:
-            logger.warning("[Webhook-API] Requisicao bloqueada: Header x-signature malformado.")
-            raise HTTPException(
-                status_code=401,
-                detail="Assinatura malformada. Acesso não autorizado."
-            )
-
-        is_valid = verify_mp_signature(
-            request_id=x_request_id or "",
-            payload_id=payload_id,
-            ts=ts,
-            v1_signature=v1,
-            webhook_secret=webhook_secret
-        )
-
-        if not is_valid:
-            logger.warning(
-                f"[Webhook-API] Assinatura HMAC invalida para webhook payload_id={payload_id}. "
-                "Tentativa de forjamento bloqueada com HTTP 401."
-            )
-            raise HTTPException(
-                status_code=401,
-                detail="Assinatura inválida. Acesso não autorizado."
-            )
+                if not is_valid:
+                    if is_payment:
+                        logger.warning(
+                            f"[Webhook-API] Assinatura HMAC invalida para webhook payload_id={payload_id}. "
+                            "Tentativa de forjamento bloqueada com HTTP 401."
+                        )
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Assinatura inválida. Acesso não autorizado."
+                        )
+                    else:
+                        logger.info(
+                            f"[Webhook-API] Assinatura HMAC invalida para evento de teste payload_id={payload_id} "
+                            "(ignorado com sucesso para permitir testes do painel MP)."
+                        )
     else:
         logger.warning(
             "[Webhook-API] MERCADOPAGO_WEBHOOK_SECRET nao configurado. "
@@ -254,7 +275,7 @@ async def mercado_pago_webhook(
         return JSONResponse(status_code=200, content={"status": "success", "message": message})
     else:
         # Retorna 200 para o Mercado Pago não reenviar em casos de negócio normais
-        # (ex: status "pending" ou pagamento já processado)
+        # (ex: status "pending", evento de teste ou pagamento já processado)
         return JSONResponse(status_code=200, content={"status": "ignored", "message": message})
 
 
