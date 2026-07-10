@@ -4,9 +4,12 @@ import logging
 import traceback
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
+
+# Cache global do engine do SQLAlchemy
+_db_engine = None
 
 def log_db_error(msg: str, e: Exception):
     try:
@@ -18,27 +21,75 @@ def log_db_error(msg: str, e: Exception):
     except Exception as log_ex:
         logger.error(f"Erro ao gravar log local de erro: {log_ex}")
 
+
+def get_db_engine():
+    """
+    Retorna ou inicializa o engine do SQLAlchemy.
+    Suporta leitura a partir de:
+    1. Variável de ambiente DATABASE_URL
+    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"])
+    3. Leitura direta de .streamlit/secrets.toml (fallback local)
+    """
+    global _db_engine
+    if _db_engine is not None:
+        return _db_engine
+
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        try:
+            db_url = st.secrets["connections"]["sql"]["url"]
+        except Exception:
+            pass
+
+    if not db_url:
+        try:
+            import re
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
+            if os.path.exists(secrets_path):
+                with open(secrets_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                match = re.search(r'url\s*=\s*["\']([^"\']+)["\']', content)
+                if match:
+                    db_url = match.group(1).strip()
+        except Exception:
+            pass
+
+    if db_url:
+        # PostgreSQL requer prefixo postgresql:// no SQLAlchemy 1.4+
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+        logger.info("[Database] Inicializando engine SQLAlchemy...")
+        try:
+            _db_engine = create_engine(db_url, pool_pre_ping=True)
+            return _db_engine
+        except Exception as e:
+            logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
+            
+    return None
+
+
 def is_sql_configured() -> bool:
     """
-    Retorna True se houver uma configuração de banco de dados SQL activa nos secrets do Streamlit.
+    Retorna True se houver uma configuração de banco de dados SQL ativa.
     """
-    try:
-        return "connections" in st.secrets and "sql" in st.secrets["connections"]
-    except Exception:
-        return False
+    return get_db_engine() is not None
+
 
 def init_db():
     """
     Inicializa as tabelas do banco de dados relacional se estiver configurado.
     """
-    if not is_sql_configured():
+    engine = get_db_engine()
+    if not engine:
+        logger.warning("[Database] Conexão SQL não configurada. Tabelas não inicializadas.")
         return
         
     try:
-        conn = st.connection("sql")
-        with conn.session as session:
+        with engine.begin() as conn:
             # Tabela de Usuários
-            session.execute(text("""
+            conn.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 username VARCHAR(255) PRIMARY KEY,
                 email VARCHAR(255),
@@ -55,12 +106,12 @@ def init_db():
             
             # Migração de coluna: Altera cpf para VARCHAR(255) caso a tabela já existisse como VARCHAR(20)
             try:
-                session.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
+                conn.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
             except Exception as alter_err:
-                logger.warning(f"Nota: Nao foi possivel alterar a coluna cpf (provavelmente ja migrada): {alter_err}")
+                pass
             
             # Tabela de Receitas
-            session.execute(text("""
+            conn.execute(text("""
             CREATE TABLE IF NOT EXISTS receitas (
                 nome VARCHAR(255),
                 username VARCHAR(255),
@@ -80,25 +131,29 @@ def init_db():
                 PRIMARY KEY (nome, username)
             )
             """))
-            session.commit()
+            
+        logger.info("[Database] Tabelas SQL verificadas/inicializadas com sucesso.")
     except Exception as e:
         logger.error(f"Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
         log_db_error("init_db_error", e)
         st.error(f"Erro de Conexão com o Banco de Dados (init_db): {e}")
 
+
 # Inicializar tabelas em tempo de import
 init_db()
+
 
 def load_users_sql(db_lock) -> list:
     """
     Carrega todos os usuários do banco de dados relacional.
-    TTL=15: evita queries repetidas ao Neon em reruns rápidos.
-    Cache é invalidado explicitamente por save_users_sql().
     """
+    engine = get_db_engine()
+    if not engine:
+        return None
+        
     with db_lock:
         try:
-            conn = st.connection("sql")
-            df = conn.query("SELECT * FROM usuarios", ttl=15)
+            df = pd.read_sql("SELECT * FROM usuarios", engine)
             users = df.to_dict(orient="records")
             
             # Converter campos JSON textuais de volta para tipos Python
@@ -119,20 +174,22 @@ def load_users_sql(db_lock) -> list:
             st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
             return None
 
+
 @st.cache_data(ttl=15)
 def get_user_credits_cached(username: str) -> dict:
     """
     Carrega os dados essenciais do usuário atual para exibição na sidebar.
-    Busca apenas 1 registro por username — muito mais eficiente que carregar
-    toda a tabela de usuários a cada rerun.
-    Cacheado por 15 segundos para evitar queries repetidas ao Neon.
+    Busca apenas 1 registro por username.
     """
+    engine = get_db_engine()
+    if not engine:
+        return {}
+        
     try:
-        conn = st.connection("sql")
-        df = conn.query(
-            "SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)",
-            params={"uname": username},
-            ttl=15
+        df = pd.read_sql(
+            text("SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)"),
+            engine,
+            params={"uname": username}
         )
         if df.empty:
             return {}
@@ -144,31 +201,35 @@ def get_user_credits_cached(username: str) -> dict:
         logger.warning(f"get_user_credits_cached falhou para '{username}': {e}")
         return {}
 
+
 def save_users_sql(users: list, db_lock) -> bool:
     """
     Salva a lista completa de usuários no banco de dados relacional.
     Invalida o cache de leitura após qualquer escrita bem-sucedida.
     """
+    engine = get_db_engine()
+    if not engine:
+        return False
+        
     with db_lock:
         try:
-            conn = st.connection("sql")
-            with conn.session as session:
+            with engine.begin() as conn:
                 # 1. Deletar apenas os usuários que não estão na nova lista
                 usernames = [u["username"] for u in users]
                 if usernames:
                     placeholders = ", ".join(f":u{idx}" for idx in range(len(usernames)))
                     params = {f"u{idx}": u.lower() for idx, u in enumerate(usernames)}
-                    session.execute(
+                    conn.execute(
                         text(f"DELETE FROM usuarios WHERE LOWER(username) NOT IN ({placeholders})"),
                         params
                     )
                 else:
-                    session.execute(text("DELETE FROM usuarios"))
+                    conn.execute(text("DELETE FROM usuarios"))
                 
                 # 2. Inserir ou atualizar (UPSERT)
                 for u in users:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
-                    session.execute(
+                    conn.execute(
                         text("""
                         INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version)
                         VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version)
@@ -196,7 +257,6 @@ def save_users_sql(users: list, db_lock) -> bool:
                             "lgpd_version": u.get("lgpd_version", "")
                         }
                     )
-                session.commit()
 
             # Invalidar cache de leitura após escrita bem-sucedida
             try:
@@ -210,25 +270,25 @@ def save_users_sql(users: list, db_lock) -> bool:
             st.error(f"Erro de Banco de Dados (save_users_sql): {e}")
             return False
 
+
 def load_recipes_sql(db_lock, username: str = "") -> list:
     """
     Carrega receitas do banco de dados relacional filtradas por username.
-    Quando username é fornecido, usa WHERE para evitar full-table scan.
-    TTL=15 para cache local entre reruns rápidos.
     """
+    engine = get_db_engine()
+    if not engine:
+        return []
+        
     with db_lock:
         try:
-            conn = st.connection("sql")
             if username:
-                # Query eficiente: filtra no banco, não em Python
-                df = conn.query(
-                    "SELECT * FROM receitas WHERE LOWER(username) = LOWER(:uname) OR username = ''",
-                    params={"uname": username},
-                    ttl=15
+                df = pd.read_sql(
+                    text("SELECT * FROM receitas WHERE LOWER(username) = LOWER(:uname) OR username = ''"),
+                    engine,
+                    params={"uname": username}
                 )
             else:
-                # Fallback sem filtro (ex: migração ou admin)
-                df = conn.query("SELECT * FROM receitas", ttl=0)
+                df = pd.read_sql("SELECT * FROM receitas", engine)
 
             recipes = df.to_dict(orient="records")
             
@@ -253,21 +313,25 @@ def load_recipes_sql(db_lock, username: str = "") -> list:
             log_db_error("load_recipes_sql_error", e)
             return []
 
+
 def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
     """
     Salva uma receita específica no banco de dados relacional (deleta se já existir e reinsere).
     """
+    engine = get_db_engine()
+    if not engine:
+        return False
+        
     username = recipe_data.get("username", "")
     with db_lock:
         try:
-            conn = st.connection("sql")
-            with conn.session as session:
-                session.execute(
+            with engine.begin() as conn:
+                conn.execute(
                     text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
                 
-                session.execute(
+                conn.execute(
                     text("""
                     INSERT INTO receitas (
                         nome, username, nome_produto, peso_embalagem, ingredients,
@@ -297,26 +361,28 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
                         "date_saved": recipe_data.get("date_saved", "")
                     }
                 )
-                session.commit()
             return True
         except Exception as e:
             logger.error(f"Erro ao salvar receita no banco SQL: {e}", exc_info=True)
             log_db_error("save_recipe_sql_error", e)
             return False
 
+
 def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
     """
     Remove uma receita específica do banco de dados relacional.
     """
+    engine = get_db_engine()
+    if not engine:
+        return False
+        
     with db_lock:
         try:
-            conn = st.connection("sql")
-            with conn.session as session:
-                session.execute(
+            with engine.begin() as conn:
+                conn.execute(
                     text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
-                session.commit()
             return True
         except Exception as e:
             logger.error(f"Erro ao deletar receita do banco SQL: {e}", exc_info=True)
