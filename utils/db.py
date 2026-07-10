@@ -215,23 +215,10 @@ def load_users_sql(db_lock) -> list:
             return None
 
 
-def get_user_credits_cached(username: str) -> dict:
-    """
-    Carrega os dados essenciais do usuário atual para exibição na sidebar.
-    Utiliza cache do Streamlit condicionalmente se estiver rodando dentro do Streamlit.
-    """
-    # Decoramos de forma dinâmica para evitar erros de importação fora do Streamlit
-    from streamlit.runtime import exists
-    if exists():
-        @st.cache_data(ttl=15)
-        def _cached_fetch(uname: str):
-            return _fetch_user_credits(uname)
-        return _cached_fetch(username)
-    else:
-        return _fetch_user_credits(username)
-
-
 def _fetch_user_credits(username: str) -> dict:
+    """
+    Busca os dados de crédito diretamente no banco de dados.
+    """
     engine = get_db_engine()
     if not engine:
         return {}
@@ -250,6 +237,14 @@ def _fetch_user_credits(username: str) -> dict:
     except Exception as e:
         logger.warning(f"get_user_credits_cached falhou para '{username}': {e}")
         return {}
+
+
+# Mapeia dinamicamente get_user_credits_cached com cache do Streamlit apenas no ambiente Streamlit
+from streamlit.runtime import exists
+if exists():
+    get_user_credits_cached = st.cache_data(ttl=15)(_fetch_user_credits)
+else:
+    get_user_credits_cached = _fetch_user_credits
 
 
 def save_users_sql(users: list, db_lock) -> bool:
@@ -310,7 +305,6 @@ def save_users_sql(users: list, db_lock) -> bool:
 
             # Invalidar cache de leitura após escrita bem-sucedida
             try:
-                from streamlit.runtime import exists
                 if exists():
                     get_user_credits_cached.clear()
             except Exception:
