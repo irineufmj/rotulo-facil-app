@@ -78,6 +78,20 @@ def init_db_safe(engine):
                 PRIMARY KEY (nome, username)
             )
             """))
+
+            # Tabela de Chamados de Suporte
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS suporte_tickets (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(255),
+                email VARCHAR(255),
+                categoria VARCHAR(255),
+                assunto VARCHAR(500),
+                mensagem TEXT,
+                status VARCHAR(50) DEFAULT 'Aberto',
+                criado_em TIMESTAMP DEFAULT NOW()
+            )
+            """))
             
         _db_initialized = True
         logger.info("[Database] Tabelas SQL verificadas/inicializadas com sucesso.")
@@ -434,3 +448,80 @@ def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
             logger.error(f"Erro ao deletar receita do banco SQL: {e}", exc_info=True)
             log_db_error("delete_recipe_sql_error", e)
             return False
+
+
+def save_ticket_sql(username: str, email: str, categoria: str, assunto: str, mensagem: str) -> int:
+    """
+    Grava um novo chamado de suporte no banco de dados.
+    Retorna o ID gerado do ticket, ou -1 em caso de erro.
+    """
+    engine = get_db_engine()
+    if not engine:
+        return -1
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                INSERT INTO suporte_tickets (username, email, categoria, assunto, mensagem, status, criado_em)
+                VALUES (:username, :email, :categoria, :assunto, :mensagem, 'Aberto', NOW())
+                RETURNING id
+                """),
+                {
+                    "username": username,
+                    "email": email,
+                    "categoria": categoria,
+                    "assunto": assunto,
+                    "mensagem": mensagem
+                }
+            )
+            ticket_id = result.fetchone()[0]
+            logger.info(f"[Suporte] Ticket #{ticket_id} criado para '{username}'.")
+            return ticket_id
+    except Exception as e:
+        logger.error(f"[Suporte] Erro ao salvar ticket: {e}", exc_info=True)
+        return -1
+
+
+def load_tickets_sql(status_filter: str = None) -> list:
+    """
+    Carrega todos os chamados de suporte do banco de dados, ordenados pelos mais recentes.
+    Filtra por status se fornecido (ex: 'Aberto', 'Resolvido').
+    """
+    engine = get_db_engine()
+    if not engine:
+        return []
+    try:
+        if status_filter:
+            df = pd.read_sql(
+                text("SELECT * FROM suporte_tickets WHERE status = :s ORDER BY criado_em DESC"),
+                engine,
+                params={"s": status_filter}
+            )
+        else:
+            df = pd.read_sql(
+                text("SELECT * FROM suporte_tickets ORDER BY criado_em DESC"),
+                engine
+            )
+        return df.to_dict(orient="records")
+    except Exception as e:
+        logger.error(f"[Suporte] Erro ao carregar tickets: {e}", exc_info=True)
+        return []
+
+
+def update_ticket_status_sql(ticket_id: int, new_status: str) -> bool:
+    """
+    Atualiza o status de um chamado de suporte.
+    """
+    engine = get_db_engine()
+    if not engine:
+        return False
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE suporte_tickets SET status = :status WHERE id = :id"),
+                {"status": new_status, "id": ticket_id}
+            )
+        return True
+    except Exception as e:
+        logger.error(f"[Suporte] Erro ao atualizar status do ticket #{ticket_id}: {e}", exc_info=True)
+        return False

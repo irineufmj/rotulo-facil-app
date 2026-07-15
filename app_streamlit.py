@@ -292,7 +292,8 @@ nav_options = [
     "Calculadora & Rótulo", 
     "Minhas Receitas Salvas", 
     "Cadastrar Novo Ingrediente",
-    "Meu Perfil"
+    "Meu Perfil",
+    "Suporte & Ajuda"
 ]
 is_admin = st.session_state.get("is_admin", False)
 if is_admin:
@@ -1583,6 +1584,81 @@ if st.session_state.selected_page == "Meu Perfil":
     else:
         st.error('Não foi possível carregar os dados do seu perfil.')
 
+# ==============================================================================
+# TAB: SUPORTE & AJUDA
+# ==============================================================================
+if st.session_state.selected_page == "Suporte & Ajuda":
+    from utils.db import save_ticket_sql
+
+    st.markdown("### 🎧 Suporte & Ajuda")
+    st.markdown("Encontrou um problema ou tem uma sugestão? Preencha o formulário abaixo e nossa equipe retornará no seu e-mail.")
+
+    # Carregar e-mail do usuário logado
+    all_users_sup = load_users(db_lock)
+    user_data_sup = next((u for u in all_users_sup if u['username'] == st.session_state.username), None)
+    email_sup = user_data_sup.get('email', '') if user_data_sup else ''
+
+    with st.form('formulario_suporte', clear_on_submit=True):
+        st.markdown("**📧 E-mail de contato** *(pré-preenchido com seu cadastro)*")
+        st.text_input(
+            "E-mail:",
+            value=email_sup,
+            disabled=True,
+            key="suporte_email_display",
+            label_visibility="collapsed"
+        )
+
+        categoria_sup = st.selectbox(
+            "Categoria do chamado:",
+            options=[
+                "Problema com Créditos / Pagamento",
+                "Erro na Geração do Rótulo/PDF",
+                "Dúvida Técnica sobre a ANVISA",
+                "Sugestão de Melhoria / Feedback",
+                "Outros"
+            ],
+            key="suporte_categoria"
+        )
+
+        assunto_sup = st.text_input(
+            "Assunto:",
+            placeholder="Descreva brevemente o problema ou sua dúvida",
+            max_chars=200,
+            key="suporte_assunto"
+        )
+
+        mensagem_sup = st.text_area(
+            "Descrição detalhada:",
+            placeholder="Descreva com detalhes o que aconteceu, quais passos você seguiu e qual resultado esperava...",
+            height=180,
+            max_chars=2000,
+            key="suporte_mensagem"
+        )
+
+        enviar_sup = st.form_submit_button("📨 Enviar Chamado", type="primary", use_container_width=True)
+
+        if enviar_sup:
+            if not assunto_sup.strip():
+                st.error("Por favor, preencha o campo Assunto antes de enviar.")
+            elif not mensagem_sup.strip():
+                st.error("Por favor, preencha a Descrição do problema antes de enviar.")
+            else:
+                ticket_id = save_ticket_sql(
+                    username=st.session_state.username,
+                    email=email_sup,
+                    categoria=categoria_sup,
+                    assunto=assunto_sup.strip(),
+                    mensagem=mensagem_sup.strip()
+                )
+                if ticket_id > 0:
+                    st.success(
+                        f"✅ **Chamado enviado com sucesso!** Nossa equipe analisará o seu caso e retornará "
+                        f"no e-mail **{email_sup}** em breve.\n\n"
+                        f"🔖 **Número do protocolo:** `#SUP-{ticket_id:05d}`"
+                    )
+                else:
+                    st.error("Ocorreu um erro ao enviar o chamado. Por favor, tente novamente ou entre em contato por e-mail.")
+
 if is_admin:
     if st.session_state.selected_page == "Painel Administrador":
         st.markdown("### Painel do Administrador")
@@ -1693,3 +1769,53 @@ if is_admin:
                             st.error(msg)
                     else:
                         st.error("Confirmação inválida. Digite o nome do usuário exatamente para confirmar a exclusão.")
+
+        # ── SEÇÃO DE CHAMADOS DE SUPORTE (Admin) ──────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🎧 Chamados de Suporte")
+
+        from utils.db import load_tickets_sql, update_ticket_status_sql
+
+        filtro_status = st.radio(
+            "Filtrar por status:",
+            ["Todos", "Aberto", "Em Análise", "Resolvido"],
+            horizontal=True,
+            key="admin_ticket_filtro"
+        )
+        tickets = load_tickets_sql(None if filtro_status == "Todos" else filtro_status)
+
+        if not tickets:
+            st.info("Nenhum chamado encontrado para o filtro selecionado.")
+        else:
+            st.markdown(f"**{len(tickets)} chamado(s) encontrado(s):**")
+            for t in tickets:
+                criado = str(t.get('criado_em', ''))[:16]
+                status_cor = {"Aberto": "🔴", "Em Análise": "🟡", "Resolvido": "🟢"}.get(t.get('status', ''), "⚪")
+                with st.expander(
+                    f"{status_cor} **#SUP-{t['id']:05d}** | {t.get('categoria','—')} | "
+                    f"{t.get('username','—')} | {criado}"
+                ):
+                    st.markdown(f"**E-mail:** {t.get('email','—')}")
+                    st.markdown(f"**Assunto:** {t.get('assunto','—')}")
+                    st.markdown(f"**Mensagem:**")
+                    st.text_area(
+                        "",
+                        value=t.get('mensagem', ''),
+                        height=120,
+                        disabled=True,
+                        key=f"ticket_msg_{t['id']}"
+                    )
+                    novo_status = st.selectbox(
+                        "Alterar status:",
+                        ["Aberto", "Em Análise", "Resolvido"],
+                        index=["Aberto", "Em Análise", "Resolvido"].index(t.get('status', 'Aberto'))
+                            if t.get('status', 'Aberto') in ["Aberto", "Em Análise", "Resolvido"] else 0,
+                        key=f"ticket_status_{t['id']}"
+                    )
+                    if st.button("Salvar Status", key=f"ticket_save_{t['id']}"):
+                        if update_ticket_status_sql(t['id'], novo_status):
+                            st.success(f"Status do chamado #SUP-{t['id']:05d} atualizado para '{novo_status}'.")
+                            st.rerun()
+                        else:
+                            st.error("Erro ao atualizar o status. Tente novamente.")
+
