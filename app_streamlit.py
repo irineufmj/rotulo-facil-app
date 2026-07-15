@@ -15,6 +15,7 @@ from utils.auth import authenticate_user, register_user, admin_update_user, admi
 from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe, delete_recipe
 from utils.calculations import get_num_val, round_anvisa, VDR
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
+from utils.db import save_ticket_sql, load_tickets_sql, update_ticket_status_sql
 
 # Configurações de logging e concorrência
 import logging
@@ -1588,7 +1589,6 @@ if st.session_state.selected_page == "Meu Perfil":
 # TAB: SUPORTE & AJUDA
 # ==============================================================================
 if st.session_state.selected_page == "Suporte & Ajuda":
-    from utils.db import save_ticket_sql
 
     st.markdown("### 🎧 Suporte & Ajuda")
     st.markdown("Encontrou um problema ou tem uma sugestão? Preencha o formulário abaixo e nossa equipe retornará no seu e-mail.")
@@ -1773,8 +1773,6 @@ if is_admin:
         # ── SEÇÃO DE CHAMADOS DE SUPORTE (Admin) ──────────────────────────────
         st.markdown("---")
         st.markdown("#### 🎧 Chamados de Suporte")
-
-        from utils.db import load_tickets_sql, update_ticket_status_sql
 
         filtro_status = st.radio(
             "Filtrar por status:",
