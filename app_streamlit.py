@@ -16,6 +16,7 @@ from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe
 from utils.calculations import get_num_val, round_anvisa, VDR
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
 from utils.db import save_ticket_sql, load_tickets_sql, update_ticket_status_sql
+from utils.mapear_ingredientes import gerar_lista_ingredientes_rotulo
 
 # Configurações de logging e concorrência
 import logging
@@ -953,12 +954,39 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
             st.markdown(combined_preview_html, unsafe_allow_html=True)
             
             st.divider() # Separação visual inferior
-            
-            # --- Lista de Ingredientes Decrescente ---
-            # Ordenar ingredientes por peso decrescente
-            sorted_ingredients = sorted(st.session_state.recipe, key=lambda x: x["w"], reverse=True)
-            ing_names = [ing["d"].upper() for ing in sorted_ingredients]
-            ing_text = ", ".join(ing_names)
+
+            # --- Lista de Ingredientes com Nomes Comerciais (ANVISA) ---
+            # Gera o texto base a partir dos nomes limpos, ordenado por peso decrescente
+            lista_base = gerar_lista_ingredientes_rotulo(st.session_state.recipe)
+
+            # Inicializa ou atualiza o texto editável na session_state
+            # Reconstrói sempre que a receita mudar (novo cálculo)
+            if (
+                "lista_ingredientes_editavel" not in st.session_state
+                or st.session_state.get("_recipe_hash") != hash(str(st.session_state.recipe))
+            ):
+                st.session_state["lista_ingredientes_editavel"] = lista_base
+                st.session_state["_recipe_hash"] = hash(str(st.session_state.recipe))
+
+            st.markdown("##### ✏️ Lista de Ingredientes (editável)")
+            st.caption(
+                "Os nomes foram convertidos automaticamente para o padrão comercial ANVISA, "
+                "ordenados do maior para o menor peso. Edite livremente antes de gerar o PDF "
+                "(ex: adicionar alergênicos, conservantes, marcas comerciais)."
+            )
+            lista_editada = st.text_area(
+                "Lista de Ingredientes:",
+                value=st.session_state["lista_ingredientes_editavel"],
+                height=120,
+                key="lista_ingredientes_widget",
+                label_visibility="collapsed",
+                help="Texto que aparecerá no campo INGREDIENTES do rótulo e do PDF oficial.",
+            )
+            # Salva alterações manuais de volta na session_state
+            st.session_state["lista_ingredientes_editavel"] = lista_editada
+
+            # Texto final a ser usado no rótulo e no PDF
+            ing_text = lista_editada.rstrip(".").strip()
             
             # --- Alérgenos e Declarações Legais ---
             alergenicos_text_list = []
@@ -1146,8 +1174,13 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
                 
                 # Informações de ingredientes e alérgenos
                 story.append(Paragraph("<b>DECLARAÇÃO DE INGREDIENTES E AVISOS LEGAIS</b>", section_style))
-                
-                ingredients_paragraph = f"<b>INGREDIENTES:</b> {ing_text}."
+
+                # Usa o texto editado pelo usuário (já inclui o ponto final se digitado)
+                ing_text_pdf = st.session_state.get("lista_ingredientes_editavel", ing_text)
+                if not ing_text_pdf.strip().endswith("."):
+                    ing_text_pdf = ing_text_pdf.strip() + "."
+
+                ingredients_paragraph = f"<b>INGREDIENTES:</b> {ing_text_pdf}"
                 story.append(Paragraph(ingredients_paragraph, legal_style))
                 story.append(Spacer(1, 8))
                 
