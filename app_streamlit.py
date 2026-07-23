@@ -1807,9 +1807,10 @@ if is_admin:
                         user_sel.get("email", ""),
                         user_sel.get("cpf", ""),
                         db_lock,
-                        None,  # senha inalterada
+                        None,           # senha inalterada
                         user_sel.get("is_admin", False),
-                        novo_saldo
+                        novo_saldo,
+                        skip_validation=True  # não valida CPF/e-mail no ajuste de créditos
                     )
                     if success:
                         st.success(

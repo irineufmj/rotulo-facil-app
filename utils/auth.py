@@ -387,7 +387,7 @@ def admin_delete_user(username_to_delete, db_lock):
             
         return False, "Erro ao atualizar banco de dados de usuários."
 
-def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, new_password=None, is_admin_val=False, creditos_val=None):
+def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, new_password=None, is_admin_val=False, creditos_val=None, skip_validation=False):
     old_clean = old_username.strip().lower()
     new_username_clean = new_username.strip()
     new_email_clean = new_email.strip()
@@ -398,13 +398,15 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
     
     if not new_username_clean:
         return False, "O nome de usuário não pode ser vazio."
-        
-    if not EMAIL_RE.match(new_email_clean):
-        return False, "Por favor, informe um endereço de e-mail válido."
-        
-    if not cpf_not_changed:
-        if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
-            return False, "Por favor, informe um CPF válido."
+
+    # skip_validation=True ignora validações de e-mail e CPF (ex: ajuste rápido de créditos)
+    if not skip_validation:
+        if not EMAIL_RE.match(new_email_clean):
+            return False, "Por favor, informe um endereço de e-mail válido."
+            
+        if not cpf_not_changed:
+            if new_cpf_digits != "00000000000" and not validate_cpf(new_cpf_digits):
+                return False, "Por favor, informe um CPF válido."
         
     with db_lock:
         new_hashed_cpf = hash_cpf(new_cpf_digits) if not cpf_not_changed else None
