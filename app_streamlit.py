@@ -1751,9 +1751,76 @@ if is_admin:
         st.markdown("#### 👥 Usuários Cadastrados")
         st.dataframe(pd.DataFrame(users_display), use_container_width=True)
         
-        admin_action = st.radio("Selecione uma ação administrativa:", ["Editar Usuário", "Criar Usuário", "Excluir Usuário"], horizontal=True)
+        admin_action = st.radio(
+            "Selecione uma ação administrativa:",
+            ["💰 Ajustar Créditos", "✏️ Editar Usuário", "➕ Criar Usuário", "🗑️ Excluir Usuário"],
+            horizontal=True
+        )
         
-        if admin_action == "Editar Usuário":
+        if admin_action == "💰 Ajustar Créditos":
+            st.markdown("##### 💰 Ajuste Rápido de Créditos")
+            st.caption("Altere o saldo de créditos de qualquer usuário sem precisar preencher CPF ou outros dados.")
+
+            # Excluir o próprio admin da lista para evitar auto-edição acidental
+            non_admin_users = [u for u in users if not u.get("is_admin", False)]
+            all_editable = [u["username"] for u in users]
+
+            with st.form("form_ajuste_creditos"):
+                cred_username = st.selectbox(
+                    "Selecione o usuário:",
+                    options=all_editable,
+                    key="cred_user_select"
+                )
+
+                # Mostra o saldo atual dinamicamente
+                user_sel = next((u for u in users if u["username"] == cred_username), None)
+                saldo_atual = int(user_sel.get("creditos_disponiveis", 0)) if user_sel else 0
+                st.info(f"📊 Saldo atual de **{cred_username}**: **{saldo_atual} crédito(s)**")
+
+                col_cred1, col_cred2 = st.columns(2)
+                operacao = col_cred1.radio(
+                    "Operação:",
+                    ["➕ Adicionar", "➖ Remover", "🔄 Definir valor exato"],
+                    key="cred_operacao"
+                )
+                qtd_creditos = col_cred2.number_input(
+                    "Quantidade de créditos:",
+                    min_value=0,
+                    value=1,
+                    step=1,
+                    key="cred_qtd"
+                )
+
+                submit_cred = st.form_submit_button("💾 Salvar Créditos", type="primary", use_container_width=True)
+                if submit_cred and user_sel:
+                    if operacao == "➕ Adicionar":
+                        novo_saldo = saldo_atual + int(qtd_creditos)
+                    elif operacao == "➖ Remover":
+                        novo_saldo = max(0, saldo_atual - int(qtd_creditos))
+                    else:  # Definir valor exato
+                        novo_saldo = int(qtd_creditos)
+
+                    # Preserva todos os dados existentes, altera apenas créditos
+                    success, msg = admin_update_user(
+                        cred_username,
+                        user_sel.get("username", cred_username),
+                        user_sel.get("email", ""),
+                        user_sel.get("cpf", ""),
+                        db_lock,
+                        None,  # senha inalterada
+                        user_sel.get("is_admin", False),
+                        novo_saldo
+                    )
+                    if success:
+                        st.success(
+                            f"✅ Créditos de **{cred_username}** atualizados: "
+                            f"{saldo_atual} → **{novo_saldo}** crédito(s)."
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao atualizar créditos: {msg}")
+
+        elif admin_action == "✏️ Editar Usuário":
             st.markdown("##### ✏️ Editar Cadastro de Usuário")
             usernames = [u["username"] for u in users]
             selected_username = st.selectbox("Selecione o usuário para editar:", usernames)
@@ -1788,7 +1855,7 @@ if is_admin:
                             else:
                                 st.error(msg)
                                 
-        elif admin_action == "Criar Usuário":
+        elif admin_action == "➕ Criar Usuário":
             st.markdown("##### 📝 Cadastrar Novo Usuário (Comum ou Admin)")
             with st.form("form_create_user_admin"):
                 create_name = st.text_input("Nome de Usuário:", placeholder="Ex: joao_silva")
@@ -1808,7 +1875,7 @@ if is_admin:
                     else:
                         st.error(msg)
                         
-        elif admin_action == "Excluir Usuário":
+        elif admin_action == "🗑️ Excluir Usuário":
             st.markdown("##### 🗑️ Excluir Usuário e Receitas Associadas (Cascata)")
             current_user = st.session_state.get("username", "")
             # Não permitir deletar a si mesmo na lista
