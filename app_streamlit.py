@@ -968,12 +968,34 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
                 st.session_state["lista_ingredientes_editavel"] = lista_base
                 st.session_state["_recipe_hash"] = hash(str(st.session_state.recipe))
 
-            st.markdown("##### ✏️ Lista de Ingredientes (editável)")
-            st.caption(
-                "Os nomes foram convertidos automaticamente para o padrão comercial ANVISA, "
-                "ordenados do maior para o menor peso. Edite livremente antes de gerar o PDF "
-                "(ex: adicionar alergênicos, conservantes, marcas comerciais)."
-            )
+            # Caixa verde destacando que o campo é editável
+            st.markdown("""
+            <div style="
+                background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+                border: 2px solid #22c55e;
+                border-radius: 14px;
+                padding: 16px 20px 4px 20px;
+                margin: 12px 0 4px 0;
+                box-shadow: 0 2px 8px rgba(34,197,94,0.10);
+            ">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                    <span style="font-size:1.25rem;">✏️</span>
+                    <strong style="font-size:1rem; color:#15803d;">Lista de Ingredientes</strong>
+                    <span style="
+                        background:#22c55e; color:#fff;
+                        font-size:0.68rem; font-weight:700;
+                        padding:2px 9px; border-radius:20px;
+                        letter-spacing:0.5px; text-transform:uppercase;
+                    ">Editável</span>
+                </div>
+                <p style="margin:0 0 10px 0; font-size:0.82rem; color:#166534; line-height:1.5;">
+                    Nomes convertidos automaticamente para o padrão comercial ANVISA, ordenados
+                    do <strong>maior para o menor peso</strong>. Clique no campo abaixo para editar
+                    antes de gerar o PDF — adicione conservantes, alergênicos ou ajuste marcas comerciais.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
             lista_editada = st.text_area(
                 "Lista de Ingredientes:",
                 value=st.session_state["lista_ingredientes_editavel"],
@@ -982,6 +1004,15 @@ if st.session_state.selected_page == "Calculadora & Rótulo":
                 label_visibility="collapsed",
                 help="Texto que aparecerá no campo INGREDIENTES do rótulo e do PDF oficial.",
             )
+
+            # Badge de confirmação visual ao editar
+            if lista_editada != lista_base:
+                st.markdown(
+                    '<p style="font-size:0.78rem; color:#15803d; margin-top:2px;">'
+                    '✅ Texto personalizado salvo — será usado no PDF.</p>',
+                    unsafe_allow_html=True
+                )
+
             # Salva alterações manuais de volta na session_state
             st.session_state["lista_ingredientes_editavel"] = lista_editada
 
