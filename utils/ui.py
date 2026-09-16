@@ -47,6 +47,52 @@ def inject_custom_css():
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
         margin-bottom: 1.5rem;
     }
+
+    /* Cards Finanças & Precificação */
+    .metric-card-fin {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 16px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+        margin-bottom: 10px;
+    }
+    .metric-card-fin.primary {
+        border-left: 5px solid #00a88f;
+        background: #f0fdfa;
+    }
+    .metric-card-fin.success {
+        border-left: 5px solid #10b981;
+        background: #ecfdf5;
+    }
+    .metric-card-fin.warning {
+        border-left: 5px solid #f59e0b;
+        background: #fffbeb;
+    }
+    .metric-card-fin.danger {
+        border-left: 5px solid #ef4444;
+        background: #fef2f2;
+    }
+    .fin-label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #6b7280;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+    }
+    .fin-val {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #0b3b4c;
+        margin: 0;
+        line-height: 1.2;
+    }
+    .fin-sub {
+        font-size: 0.8rem;
+        color: #4b5563;
+        margin-top: 4px;
+    }
     
     /* ANVISA Table Enhancements */
     .anvisa-table-container {

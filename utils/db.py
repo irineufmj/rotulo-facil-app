@@ -75,9 +75,31 @@ def init_db_safe(engine):
                 allergens_may_contain TEXT, -- Salvo como String JSON
                 product_type VARCHAR(255),
                 date_saved VARCHAR(100),
+                custo_embalagem FLOAT DEFAULT 0.0,
+                tempo_preparo_min FLOAT DEFAULT 0.0,
+                custo_hora_mao_obra FLOAT DEFAULT 0.0,
+                custo_operacional_pct FLOAT DEFAULT 0.0,
+                taxas_venda_pct FLOAT DEFAULT 0.0,
+                margem_desejada_pct FLOAT DEFAULT 30.0,
+                preco_venda_praticado FLOAT DEFAULT 0.0,
                 PRIMARY KEY (nome, username)
             )
             """))
+
+            # Migração de colunas financeiras para bancos já existentes
+            for col_def in [
+                "custo_embalagem FLOAT DEFAULT 0.0",
+                "tempo_preparo_min FLOAT DEFAULT 0.0",
+                "custo_hora_mao_obra FLOAT DEFAULT 0.0",
+                "custo_operacional_pct FLOAT DEFAULT 0.0",
+                "taxas_venda_pct FLOAT DEFAULT 0.0",
+                "margem_desejada_pct FLOAT DEFAULT 30.0",
+                "preco_venda_praticado FLOAT DEFAULT 0.0"
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE receitas ADD COLUMN IF NOT EXISTS {col_def}"))
+                except Exception:
+                    pass
 
             # Tabela de Chamados de Suporte
             conn.execute(text("""
@@ -178,9 +200,15 @@ def get_db_engine():
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         
-        logger.info("[Database] Inicializando engine SQLAlchemy...")
+        logger.info("[Database] Inicializando engine SQLAlchemy com pool de conexões otimizado...")
         try:
-            _db_engine = create_engine(db_url, pool_pre_ping=True)
+            _db_engine = create_engine(
+                db_url,
+                pool_pre_ping=True,
+                pool_recycle=1800,
+                pool_size=10,
+                max_overflow=20
+            )
             # Inicializar tabelas de forma segura e tardia (lazy)
             init_db_safe(_db_engine)
             return _db_engine
@@ -331,6 +359,70 @@ def save_users_sql(users: list, db_lock) -> bool:
             return False
 
 
+def add_user_credits_sql(target_identifier: str, credits_to_add: int, payment_id: str, db_lock) -> tuple:
+    """
+    Atualiza atômica e diretamente os créditos do usuário no banco SQL, prevenindo race conditions e evitando ler/escrever a tabela inteira.
+    Retorna (sucesso: bool, mensagem: str).
+    """
+    engine = get_db_engine()
+    if not engine:
+        return False, "Engine SQL não disponível."
+
+    with db_lock:
+        try:
+            with engine.begin() as conn:
+                # 1. Localizar o usuário por username ou email
+                result = conn.execute(
+                    text("SELECT username, creditos_disponiveis, transacoes_processadas FROM usuarios WHERE LOWER(username) = LOWER(:target) OR LOWER(email) = LOWER(:target) LIMIT 1"),
+                    {"target": target_identifier.strip().lower()}
+                ).fetchone()
+
+                if not result:
+                    return False, f"Usuário '{target_identifier}' não foi encontrado no banco de dados SQL."
+
+                username, current_credits, tx_json = result[0], result[1], result[2]
+                
+                try:
+                    tx_list = json.loads(tx_json) if tx_json else []
+                except Exception:
+                    tx_list = []
+
+                if payment_id in tx_list:
+                    return True, f"Créditos do pagamento {payment_id} já haviam sido aplicados anteriormente para o usuário '{username}'."
+
+                tx_list.append(payment_id)
+                new_tx_json = json.dumps(tx_list)
+                new_credits = (current_credits or 0) + credits_to_add
+
+                conn.execute(
+                    text("""
+                    UPDATE usuarios
+                    SET creditos_disponiveis = :new_credits,
+                        transacoes_processadas = :tx_json,
+                        id_transacao_pagamento = :payment_id
+                    WHERE username = :username
+                    """),
+                    {
+                        "new_credits": new_credits,
+                        "tx_json": new_tx_json,
+                        "payment_id": payment_id,
+                        "username": username
+                    }
+                )
+
+            # Invalidar cache do Streamlit se disponível
+            try:
+                if exists():
+                    get_user_credits_cached.clear()
+            except Exception:
+                pass
+
+            return True, f"Sucesso: Adicionados {credits_to_add} créditos para o usuário '{username}' (Transação: {payment_id})."
+        except Exception as e:
+            logger.error(f"Erro ao adicionar créditos via SQL para {target_identifier}: {e}", exc_info=True)
+            return False, f"Erro no banco de dados relacional ao adicionar créditos: {e}"
+
+
 def load_recipes_sql(db_lock, username: str = "") -> list:
     """
     Carrega receitas do banco de dados relacional filtradas por username.
@@ -352,11 +444,20 @@ def load_recipes_sql(db_lock, username: str = "") -> list:
 
             recipes = df.to_dict(orient="records")
             
-            # Converter colunas de texto JSON para objetos Python
+            # Converter colunas de texto JSON e numéricas para objetos Python
             for r in recipes:
-                r["peso_embalagem"] = float(r.get("peso_embalagem", 0.0))
-                r["weight_final"] = float(r.get("weight_final", 0.0))
-                r["portion_size"] = float(r.get("portion_size", 0.0))
+                r["peso_embalagem"] = float(r.get("peso_embalagem", 0.0) or 0.0)
+                r["weight_final"] = float(r.get("weight_final", 0.0) or 0.0)
+                r["portion_size"] = float(r.get("portion_size", 0.0) or 0.0)
+                
+                # Campos financeiros
+                r["custo_embalagem"] = float(r.get("custo_embalagem", 0.0) or 0.0)
+                r["tempo_preparo_min"] = float(r.get("tempo_preparo_min", 0.0) or 0.0)
+                r["custo_hora_mao_obra"] = float(r.get("custo_hora_mao_obra", 0.0) or 0.0)
+                r["custo_operacional_pct"] = float(r.get("custo_operacional_pct", 0.0) or 0.0)
+                r["taxas_venda_pct"] = float(r.get("taxas_venda_pct", 0.0) or 0.0)
+                r["margem_desejada_pct"] = float(r.get("margem_desejada_pct", 30.0) or 30.0)
+                r["preco_venda_praticado"] = float(r.get("preco_venda_praticado", 0.0) or 0.0)
                 
                 # Deserializar ingredientes e alérgenos
                 for field in ["ingredients", "allergens_direct", "allergens_deriv", "allergens_may_contain"]:
@@ -396,11 +497,15 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
                     INSERT INTO receitas (
                         nome, username, nome_produto, peso_embalagem, ingredients,
                         weight_final, portion_size, case_measure, gluten_opt, lactose_opt,
-                        allergens_direct, allergens_deriv, allergens_may_contain, product_type, date_saved
+                        allergens_direct, allergens_deriv, allergens_may_contain, product_type, date_saved,
+                        custo_embalagem, tempo_preparo_min, custo_hora_mao_obra, custo_operacional_pct,
+                        taxas_venda_pct, margem_desejada_pct, preco_venda_praticado
                     ) VALUES (
                         :nome, :username, :nome_produto, :peso_embalagem, :ingredients,
                         :weight_final, :portion_size, :case_measure, :gluten_opt, :lactose_opt,
-                        :allergens_direct, :allergens_deriv, :allergens_may_contain, :product_type, :date_saved
+                        :allergens_direct, :allergens_deriv, :allergens_may_contain, :product_type, :date_saved,
+                        :custo_embalagem, :tempo_preparo_min, :custo_hora_mao_obra, :custo_operacional_pct,
+                        :taxas_venda_pct, :margem_desejada_pct, :preco_venda_praticado
                     )
                     """),
                     {
@@ -418,7 +523,14 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
                         "allergens_deriv": json.dumps(recipe_data.get("allergens_deriv", [])),
                         "allergens_may_contain": json.dumps(recipe_data.get("allergens_may_contain", [])),
                         "product_type": recipe_data.get("product_type", ""),
-                        "date_saved": recipe_data.get("date_saved", "")
+                        "date_saved": recipe_data.get("date_saved", ""),
+                        "custo_embalagem": float(recipe_data.get("custo_embalagem", 0.0)),
+                        "tempo_preparo_min": float(recipe_data.get("tempo_preparo_min", 0.0)),
+                        "custo_hora_mao_obra": float(recipe_data.get("custo_hora_mao_obra", 0.0)),
+                        "custo_operacional_pct": float(recipe_data.get("custo_operacional_pct", 0.0)),
+                        "taxas_venda_pct": float(recipe_data.get("taxas_venda_pct", 0.0)),
+                        "margem_desejada_pct": float(recipe_data.get("margem_desejada_pct", 30.0)),
+                        "preco_venda_praticado": float(recipe_data.get("preco_venda_praticado", 0.0))
                     }
                 )
             return True

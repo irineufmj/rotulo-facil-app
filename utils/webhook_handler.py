@@ -99,11 +99,11 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
         except ValueError:
             pass
     elif external_ref and ":" in external_ref:
-        parts = external_ref.split(":")
+        parts = external_ref.rsplit(":", 1)
         if len(parts) == 2:
             try:
                 credits_to_add = int(parts[1])
-                logger.info(f"[Webhook-Handler] Creditos extraidos de external_reference format (user:credits): {credits_to_add}")
+                logger.info(f"[Webhook-Handler] Creditos extraidos de external_reference (user:credits): {credits_to_add}")
             except ValueError:
                 pass
             
@@ -111,7 +111,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
     target_user_identifier = None
     if external_ref:
         if ":" in external_ref:
-            target_user_identifier = external_ref.split(":")[0].strip().lower()
+            target_user_identifier = external_ref.rsplit(":", 1)[0].strip().lower()
         else:
             target_user_identifier = external_ref.strip().lower()
     else:
@@ -127,9 +127,15 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
         logger.warning(f"[Webhook-Handler] Ignorado: Pagamento {payment_id} com status '{status}' nao aprovado.")
         return False, f"Pagamento {payment_id} está com status '{status}'. Créditos não liberados."
 
-    # Atualizar o banco de dados de usuários de forma segura com lock
+    # Se o banco SQL estiver configurado, realizar atualização atômica sem carregar tabela inteira
+    from utils.db import is_sql_configured, add_user_credits_sql
+    if is_sql_configured():
+        logger.info(f"[Webhook-Handler] Executando adicao atomica de creditos SQL para '{target_user_identifier}'...")
+        return add_user_credits_sql(target_user_identifier, credits_to_add, payment_id, db_lock)
+
+    # Fallback para armazenamento em JSON local com lock
     with db_lock:
-        logger.info("[Webhook-Handler] Adquirido db_lock. Carregando usuarios...")
+        logger.info("[Webhook-Handler] Adquirido db_lock local. Carregando usuarios...")
         users = load_users(db_lock)
         user_found = None
         
@@ -137,7 +143,7 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
         for u in users:
             u_email = u.get("email", "").strip().lower()
             u_name = u["username"].strip().lower()
-            if u_name == target_user_identifier or u_email == target_user_identifier or u_email == payer_email.strip().lower():
+            if u_name == target_user_identifier or u_email == target_user_identifier or (payer_email and u_email == payer_email.strip().lower()):
                 user_found = u
                 break
                 

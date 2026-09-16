@@ -25,7 +25,7 @@ def safe_save_json(filepath, data):
         logger.error(f"Erro ao salvar arquivo {os.path.basename(filepath)}: {e}", exc_info=True)
         return False
 
-@st.cache_data(ttl=60)
+@st.cache_data
 def load_unified_data():
     json_path = os.path.join(BASE_DIR, "alimentos_unified.json")
     
@@ -117,7 +117,14 @@ def save_recipe(name, db_lock):
         "allergens_deriv": st.session_state.allergens_deriv,
         "allergens_may_contain": st.session_state.allergens_may_contain,
         "product_type": st.session_state.product_type,
-        "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        "date_saved": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "custo_embalagem": float(st.session_state.get("custo_embalagem", 0.0)),
+        "tempo_preparo_min": float(st.session_state.get("tempo_preparo_min", 0.0)),
+        "custo_hora_mao_obra": float(st.session_state.get("custo_hora_mao_obra", 0.0)),
+        "custo_operacional_pct": float(st.session_state.get("custo_operacional_pct", 0.0)),
+        "taxas_venda_pct": float(st.session_state.get("taxas_venda_pct", 0.0)),
+        "margem_desejada_pct": float(st.session_state.get("margem_desejada_pct", 30.0)),
+        "preco_venda_praticado": float(st.session_state.get("preco_venda_praticado", 0.0))
     }
 
     from utils.db import is_sql_configured, save_recipe_sql

@@ -197,20 +197,22 @@ async def mercado_pago_webhook(
         or "payment_id" in payload
     )
 
-    # 2. Validação de assinatura HMAC (se o secret estiver configurado) - MODO DIAGNÓSTICO ATIVO
+    # 2. Validação de assinatura HMAC estrita (quando secret configurado)
     webhook_secret = get_mercado_pago_webhook_secret()
     if webhook_secret:
         if not x_signature:
             if is_payment:
-                logger.warning("[Webhook-API] [DIAGNÓSTICO] Requisicao de pagamento sem assinatura. Permitindo processamento temporariamente.")
+                logger.error("[Webhook-API] Rejeitado: Requisição de pagamento sem header x-signature.")
+                raise HTTPException(status_code=401, detail="Assinatura HMAC ausente no header x-signature.")
             else:
-                logger.info("[Webhook-API] Evento de teste/mp-connect recebido sem assinatura. Ignorado com sucesso.")
+                logger.info("[Webhook-API] Evento de teste recebido sem assinatura. Ignorado com sucesso.")
+                return JSONResponse(status_code=200, content={"status": "ignored", "message": "Evento de teste sem assinatura."})
         else:
             sig_parts = parse_x_signature(x_signature)
             ts = sig_parts.get("ts", "")
             v1 = sig_parts.get("v1", "")
 
-            # Fallback robusto para extração do ID de recurso no payload
+            # Fallback para extração do ID no payload
             payload_id = ""
             if payload.get("data") and isinstance(payload.get("data"), dict):
                 payload_id = str(payload.get("data", {}).get("id", ""))
@@ -221,9 +223,11 @@ async def mercado_pago_webhook(
 
             if not ts or not v1:
                 if is_payment:
-                    logger.warning("[Webhook-API] [DIAGNÓSTICO] Header x-signature malformado. Permitindo processamento temporariamente.")
+                    logger.error("[Webhook-API] Rejeitado: Header x-signature malformado (ausência de ts ou v1).")
+                    raise HTTPException(status_code=401, detail="Header x-signature malformado.")
                 else:
                     logger.info("[Webhook-API] Assinatura malformada em evento de teste (ignorado com sucesso).")
+                    return JSONResponse(status_code=200, content={"status": "ignored", "message": "Assinatura de teste malformada."})
             else:
                 is_valid = verify_mp_signature(
                     request_id=x_request_id or "",
@@ -235,21 +239,17 @@ async def mercado_pago_webhook(
 
                 if not is_valid:
                     if is_payment:
-                        logger.warning(
-                            f"[Webhook-API] [DIAGNÓSTICO-ALERTA] Assinatura HMAC REJEITADA para webhook payload_id={payload_id}. "
-                            "Permitindo processamento temporário por estar em modo diagnóstico."
-                        )
+                        logger.error(f"[Webhook-API] Rejeitado: Assinatura HMAC inválida para payload_id={payload_id}.")
+                        raise HTTPException(status_code=401, detail="Assinatura HMAC inválida.")
                     else:
-                        logger.info(
-                            f"[Webhook-API] Assinatura HMAC invalida para evento de teste payload_id={payload_id} "
-                            "(ignorado com sucesso para permitir testes do painel MP)."
-                        )
+                        logger.info(f"[Webhook-API] Assinatura HMAC inválida para evento de teste payload_id={payload_id}.")
+                        return JSONResponse(status_code=200, content={"status": "ignored", "message": "Assinatura de teste inválida."})
                 else:
-                    logger.info(f"[Webhook-API] [DIAGNÓSTICO-SUCESSO] Assinatura HMAC VALIDADA com sucesso para payload_id={payload_id}.")
+                    logger.info(f"[Webhook-API] Assinatura HMAC validada com sucesso para payload_id={payload_id}.")
     else:
         logger.warning(
-            "[Webhook-API] MERCADOPAGO_WEBHOOK_SECRET nao configurado. "
-            "A validacao HMAC esta desabilitada. Configure a chave secreta para seguranca maxima."
+            "[Webhook-API] MERCADOPAGO_WEBHOOK_SECRET não configurado. "
+            "A validação HMAC está desabilitada. Configure a chave secreta para segurança máxima."
         )
 
     # 3. Processar o webhook após validação
