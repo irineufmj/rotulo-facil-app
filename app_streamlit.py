@@ -18,7 +18,7 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.10.23.v3"
+_EXPECTED_UTILS_VERSION = "2026.10.23.v4"
 for _mod, _req_attr in (
     (_mod_db, "consume_user_credit_sql"),
     (_mod_data_loader, "get_ingredient_smart_defaults"),

@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.10.23.v3"
+_MODULE_VERSION = "2026.10.23.v4"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -267,37 +267,97 @@ def get_recipes_as_ingredients(db_lock, username):
 
 
 # ==============================================================================
-# CURADORIA DE INGREDIENTES BASE PARA CONFEITARIA & PRODUÇÃO ARTESANAL
+# CURADORIA DE INGREDIENTES BASE PARA PRODUÇÃO ARTESANAL & ALIMENTAÇÃO
+# (Confeitaria, Marmitas, Restaurante, Salgados, Padaria, Pizzaria e Lanches)
 # ==============================================================================
 
 INGREDIENT_CATEGORIES = [
-    "⭐ Todos os Ingredientes Base",
-    "🏆 Só os Mais Usados na Confeitaria",
-    "🥛 Laticínios, Queijos & Ovos",
+    "⭐ Todos os Insumos Favoritos (Doces & Salgados)",
+    "🍚 Arroz, Feijão, Grãos & Massas",
+    "🥩 Carnes, Frango, Peixes & Ovos",
+    "🥕 Legumes, Verduras & Hortifrúti",
+    "🥛 Laticínios & Queijos",
     "🍫 Chocolates, Açúcares & Doces",
-    "🌾 Farinhas, Amidos & Grãos",
-    "🍓 Frutas, Polpas & Vegetais",
-    "🧈 Manteigas, Óleos & Gorduras",
+    "🌾 Farinhas, Amidos & Fermentos",
+    "🧈 Óleos, Manteigas, Temperos & Molhos",
     "🥜 Castanhas, Coco & Oleaginosas",
     "➕ Meus Cadastrados & Sub-receitas",
 ]
 
 _TOP_CONFECTIONERY_LIST = [
-    ("TACO-453", "⭐ Leite Condensado Integral", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-447", "⭐ Creme de Leite", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-459", "⭐ Leite em Pó Integral (tipo Ninho)", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-458", "⭐ Leite de Vaca Integral (Líquido)", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-262", "⭐ Manteiga sem Sal", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-261", "⭐ Manteiga com Sal", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-264", "⭐ Margarina sem Sal (80% lipídeos)", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-489", "⭐ Ovo de Galinha Inteiro (Cru)", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-487", "⭐ Gema de Ovo de Galinha", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-486", "⭐ Clara de Ovo de Galinha", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-35",  "⭐ Farinha de Trigo Tradicional", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-42",  "⭐ Amido de Milho (Maisena)", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-146", "⭐ Polvilho Doce", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-7",   "⭐ Aveia em Flocos", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-43",  "⭐ Fubá de Milho", "🌾 Farinhas, Amidos & Grãos"),
+    # --- GRÃOS, ARROZ & FEIJÃO (Marmitas, Restaurantes e Comida Caseira) ---
+    ("TACO-4",   "⭐ Arroz Branco / Polido (Cru)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-2",   "⭐ Arroz Integral (Cru)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-3",   "⭐ Arroz Branco Cozido", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-562", "⭐ Feijão Carioca (Cru)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-561", "⭐ Feijão Carioca (Cozido com Caldo)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-568", "⭐ Feijão Preto (Cru)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-567", "⭐ Feijão Preto (Cozido)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-40",  "⭐ Macarrão Tradicional de Trigo (Cru)", "🍚 Arroz, Feijão, Grãos & Massas"),
+    ("TACO-121", "⭐ Farinha de Mandioca Crua", "🍚 Arroz, Feijão, Grãos & Massas"),
+
+    # --- CARNES, AVES, PEIXES & PROTEÍNAS ---
+    ("TACO-409", "⭐ Peito de Frango (Cru, sem pele)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-408", "⭐ Peito de Frango (Cozido / Desfiado)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-489", "⭐ Ovo de Galinha Inteiro (Cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-487", "⭐ Gema de Ovo de Galinha", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-486", "⭐ Clara de Ovo de Galinha", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-327", "⭐ Carne Moída Bovina (Acém cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-376", "⭐ Carne Bovina Patinho (Sem gordura, cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-369", "⭐ Carne Bovina Alcatra (Sem gordura, crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-380", "⭐ Carne Bovina Picanha (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-427", "⭐ Carne Suína Bisteca (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-433", "⭐ Carne Suína Lombo (Cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-421", "⭐ Linguiça de Porco (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-418", "⭐ Linguiça de Frango (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("TACO-307", "⭐ Pescada / Tilápia / Peixe Branco (Filé cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
+
+    # --- HORTIFRÚTI, LEGUMES & TEMPEROS ESSENCIAIS ---
+    ("TACO-82",  "⭐ Alho Cru", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-107", "⭐ Cebola Crua", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-92",  "⭐ Batata Inglesa (Crua)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-91",  "⭐ Batata Inglesa (Cozida)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-89",  "⭐ Batata Doce (Crua)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-87",  "⭐ Batata Baroa / Mandioquinha (Crua)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-130", "⭐ Mandioca / Aipim / Macaxeira (Crua)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-157", "⭐ Tomate com Semente (Cru)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-158", "⭐ Extrato de Tomate", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-159", "⭐ Molho de Tomate (Pronto)", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-110", "⭐ Cenoura Crua", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("C0020L",   "⭐ Sal Refinado (Sal de Cozinha)", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-517", "⭐ Sal Grosso", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-260", "⭐ Azeite de Oliva Extra Virgem", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-272", "⭐ Óleo de Soja", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-269", "⭐ Óleo de Girassol", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-270", "⭐ Óleo de Milho", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+
+    # --- LATICÍNIOS & QUEIJOS ---
+    ("TACO-453", "⭐ Leite Condensado Integral", "🥛 Laticínios & Queijos"),
+    ("TACO-447", "⭐ Creme de Leite", "🥛 Laticínios & Queijos"),
+    ("TACO-459", "⭐ Leite em Pó Integral (tipo Ninho)", "🥛 Laticínios & Queijos"),
+    ("TACO-458", "⭐ Leite de Vaca Integral (Líquido)", "🥛 Laticínios & Queijos"),
+    ("TACO-262", "⭐ Manteiga sem Sal", "🥛 Laticínios & Queijos"),
+    ("TACO-261", "⭐ Manteiga com Sal", "🥛 Laticínios & Queijos"),
+    ("TACO-264", "⭐ Margarina sem Sal (80% lipídeos)", "🧈 Óleos, Manteigas, Temperos & Molhos"),
+    ("TACO-463", "⭐ Queijo Muçarela", "🥛 Laticínios & Queijos"),
+    ("TACO-464", "⭐ Queijo Parmesão", "🥛 Laticínios & Queijos"),
+    ("TACO-461", "⭐ Queijo Minas Frescal", "🥛 Laticínios & Queijos"),
+    ("TACO-468", "⭐ Requeijão Cremoso", "🥛 Laticínios & Queijos"),
+    ("TACO-469", "⭐ Queijo Ricota", "🥛 Laticínios & Queijos"),
+    ("C0009G",   "⭐ Cream Cheese Tradicional", "🥛 Laticínios & Queijos"),
+    ("TACO-448", "⭐ Iogurte Natural Integral", "🥛 Laticínios & Queijos"),
+    ("TACO-522", "⭐ Chantilly (Creme Vegetal)", "🥛 Laticínios & Queijos"),
+
+    # --- FARINHAS, AMIDOS & FERMENTOS ---
+    ("TACO-35",  "⭐ Farinha de Trigo Tradicional", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-42",  "⭐ Amido de Milho (Maisena)", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-146", "⭐ Polvilho Doce", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-7",   "⭐ Aveia em Flocos", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-43",  "⭐ Fubá de Milho", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-513", "⭐ Fermento em Pó Químico (p/ Bolo)", "🌾 Farinhas, Amidos & Fermentos"),
+    ("TACO-514", "⭐ Fermento Biológico (p/ Pão)", "🌾 Farinhas, Amidos & Fermentos"),
+
+    # --- AÇÚCARES, CHOCOLATES & DOCES ---
     ("TACO-494", "⭐ Açúcar Refinado", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-492", "⭐ Açúcar Cristal", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-493", "⭐ Açúcar Mascavo", "🍫 Chocolates, Açúcares & Doces"),
@@ -313,43 +373,28 @@ _TOP_CONFECTIONERY_LIST = [
     ("C0128K",   "⭐ Creme de Avelã com Cacau (tipo Nutella)", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-501", "⭐ Doce de Leite Cremoso", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-198", "⭐ Goiabada (Doce de Goiaba em Pasta)", "🍫 Chocolates, Açúcares & Doces"),
-    ("C0009G",   "⭐ Cream Cheese Tradicional", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-468", "⭐ Requeijão Cremoso", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-463", "⭐ Queijo Muçarela", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-464", "⭐ Queijo Parmesão", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-461", "⭐ Queijo Minas Frescal", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-469", "⭐ Queijo Ricota", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-448", "⭐ Iogurte Natural Integral", "🥛 Laticínios, Queijos & Ovos"),
-    ("TACO-522", "⭐ Chantilly (Creme Vegetal)", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-515", "⭐ Gelatina em Pó", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0778B",   "⭐ Canela em Pó", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0027L",   "⭐ Extrato / Essência de Baunilha", "🍫 Chocolates, Açúcares & Doces"),
+
+    # --- FRUTAS & OLEAGINOSAS ---
+    ("TACO-239", "⭐ Morango Fresco (Cru)", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-232", "⭐ Maracujá In Natura", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-233", "⭐ Polpa de Maracujá Congelada", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-220", "⭐ Limão Tahiti", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-214", "⭐ Laranja Pêra", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-182", "⭐ Banana Prata", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-164", "⭐ Abacaxi Fresco", "🥕 Legumes, Verduras & Hortifrúti"),
+    ("TACO-222", "⭐ Maçã Fuji", "🥕 Legumes, Verduras & Hortifrúti"),
     ("TACO-523", "⭐ Leite de Coco", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-590", "⭐ Coco Ralado / Coco Fresco", "🥜 Castanhas, Coco & Oleaginosas"),
-    ("TACO-8",   "⭐ Biscoito Maisena (p/ Tortas e Palha Italiana)", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-239", "⭐ Morango Fresco (Cru)", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-232", "⭐ Maracujá In Natura", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-233", "⭐ Polpa de Maracujá Congelada", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-220", "⭐ Limão Tahiti", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-214", "⭐ Laranja Pêra", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-182", "⭐ Banana Prata", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-164", "⭐ Abacaxi Fresco", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-222", "⭐ Maçã Fuji", "🍓 Frutas, Polpas & Vegetais"),
-    ("TACO-110", "⭐ Cenoura Crua", "🍓 Frutas, Polpas & Vegetais"),
     ("TACO-557", "⭐ Amendoim Cru", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-579", "⭐ Paçoca de Amendoim", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-587", "⭐ Amêndoa Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-588", "⭐ Castanha de Caju Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-589", "⭐ Castanha-do-Pará / Brasil", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-597", "⭐ Nozes", "🥜 Castanhas, Coco & Oleaginosas"),
-    ("TACO-272", "⭐ Óleo de Soja", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-269", "⭐ Óleo de Girassol", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-270", "⭐ Óleo de Milho", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-260", "⭐ Azeite de Oliva Extra Virgem", "🧈 Manteigas, Óleos & Gorduras"),
-    ("TACO-513", "⭐ Fermento em Pó Químico (p/ Bolo)", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-514", "⭐ Fermento Biológico (p/ Pão)", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-515", "⭐ Gelatina em Pó", "🍫 Chocolates, Açúcares & Doces"),
-    ("C0778B",   "⭐ Canela em Pó", "🍫 Chocolates, Açúcares & Doces"),
-    ("C0027L",   "⭐ Extrato / Essência de Baunilha", "🍫 Chocolates, Açúcares & Doces"),
-    ("C0020L",   "⭐ Sal Refinado (Sal de Cozinha)", "🌾 Farinhas, Amidos & Grãos"),
-    ("TACO-517", "⭐ Sal Grosso", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-8",   "⭐ Biscoito Maisena (p/ Tortas e Palha Italiana)", "🌾 Farinhas, Amidos & Fermentos"),
 ]
 
 TOP_CONFECTIONERY_MAP = {
@@ -369,15 +414,19 @@ _PREPARED_DISH_MARKERS = (
 )
 
 _PREPARED_DISH_PREFIXES = (
-    "sanduíche", "sanduiche", "pizza", "macarrão", "macarrao", "lasanha",
+    "sanduíche", "sanduiche", "pizza", "lasanha",
     "canelone", "ravioli", "risoto", "panqueca", "bife ", "croquete",
     "pastel", "coxinha", "empada", "esfiha", "quiche", "suflê", "sufle",
     "omelete", "sopa", "caldo,", "salada", "vitamina,", "bebida,", "bebida láctea",
-    "papa de", "arroz,", "feijão,", "feijao,", "bolo,", "torta,", "pudim",
+    "papa de", "bolo,", "torta,", "pudim",
     "mousse", "pavê", "pave", "brigadeiro", "beijinho", "torrada", "croissant",
     "pamonha", "curau", "canjica", "cuscuz", "tapioca", "pipoca", "farofa",
     "maionese", "refrigerante", "chá,", "cha,", "suco ", "flan,", "maria mole",
-    "pão,", "pao,", "biscoito,", "bombom,"
+    "pão,", "pao,", "biscoito,", "bombom,",
+    "arroz com", "arroz de ", "arroz carreteiro", "bolinho de arroz", "baião de dois", "baiao de dois", "arroz doce",
+    "feijão tropeiro", "feijao tropeiro", "feijão com", "feijao com",
+    "macarrão com", "macarrao com", "macarrão ao", "macarrao ao", "macarrão de", "macarrao de", "macarrão à", "macarrao a",
+    "estrogonofe", "salpicão", "salpicao"
 )
 
 
@@ -461,6 +510,50 @@ def format_ingredient_option_label(food: dict) -> str:
 
 
 _SMART_PACKAGE_DEFAULTS = {
+    # --- GRÃOS & CEREAIS ---
+    "TACO-4":   {"use_g": 500.0, "pkg_g": 1000.0, "price": 6.50,  "hint": "1 pacote de arroz tem 1 kg ou 5 kg (1 xícara de arroz cru = ~200g)"},
+    "TACO-2":   {"use_g": 500.0, "pkg_g": 1000.0, "price": 8.90,  "hint": "1 pacote de arroz integral tem 1 kg (1 xícara = ~200g)"},
+    "TACO-3":   {"use_g": 300.0, "pkg_g": 1000.0, "price": 6.50,  "hint": "Arroz cozido rende o dobro do cru (1 xícara cheia = ~160g cozido)"},
+    "TACO-562": {"use_g": 500.0, "pkg_g": 1000.0, "price": 8.50,  "hint": "1 pacote de feijão carioca tem 1 kg (1 xícara de grão cru = ~180g)"},
+    "TACO-561": {"use_g": 300.0, "pkg_g": 1000.0, "price": 8.50,  "hint": "Feijão carioca cozido com caldo (1 concha média cheia = ~140g)"},
+    "TACO-568": {"use_g": 500.0, "pkg_g": 1000.0, "price": 8.90,  "hint": "1 pacote de feijão preto tem 1 kg"},
+    "TACO-567": {"use_g": 300.0, "pkg_g": 1000.0, "price": 8.90,  "hint": "Feijão preto cozido (1 concha média cheia = ~140g)"},
+    "TACO-40":  {"use_g": 500.0, "pkg_g": 500.0,  "price": 4.50,  "hint": "1 pacote padrão de macarrão tem 500g"},
+    "TACO-121": {"use_g": 200.0, "pkg_g": 1000.0, "price": 7.50,  "hint": "1 pacote de farinha de mandioca tem 1 kg ou 500g"},
+
+    # --- CARNES, FRANGO & PROTEÍNAS ---
+    "TACO-409": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 22.00, "hint": "Bandeja ou pacote de peito de frango tem ~1 kg (1 filé médio = ~120g a 150g)"},
+    "TACO-408": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 24.00, "hint": "Peito de frango cozido e desfiado para recheios ou marmitas"},
+    "TACO-327": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 35.00, "hint": "Carne moída para recheios de salgados, empadão, almôndegas ou molho"},
+    "TACO-376": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 42.00, "hint": "Patinho bovino moído ou em bifes para marmitas saudáveis"},
+    "TACO-369": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 45.00, "hint": "Alcatra bovina para bifes ou picadinho"},
+    "TACO-380": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 69.00, "hint": "Picanha bovina fatiada em bifes"},
+    "TACO-427": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 22.00, "hint": "Bisteca suína para marmitas e assados"},
+    "TACO-433": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 26.00, "hint": "Lombo suíno para assados ou fatiados"},
+    "TACO-421": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 24.00, "hint": "Linguiça toscana/de porco (1 gomo = ~80g a 100g)"},
+    "TACO-418": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 22.00, "hint": "Linguiça de frango"},
+    "TACO-307": {"use_g": 500.0,  "pkg_g": 1000.0, "price": 38.00, "hint": "Pacote de filé de tilápia ou pescada branca tem 500g ou 1 kg"},
+
+    # --- HORTIFRÚTI & TEMPEROS ---
+    "TACO-82":  {"use_g": 20.0,  "pkg_g": 100.0,  "price": 4.50,  "hint": "1 dente de alho pesa ~5g (4 dentes = ~20g). 1 cabeça inteira = ~40g"},
+    "TACO-107": {"use_g": 150.0, "pkg_g": 1000.0, "price": 5.90,  "hint": "1 cebola média pesa ~120g a 150g"},
+    "TACO-92":  {"use_g": 500.0, "pkg_g": 1000.0, "price": 6.90,  "hint": "1 batata média pesa ~150g (3 batatas = ~450g a 500g)"},
+    "TACO-91":  {"use_g": 300.0, "pkg_g": 1000.0, "price": 6.90,  "hint": "Batata inglesa cozida para purê, maionese ou acompanhamento"},
+    "TACO-89":  {"use_g": 500.0, "pkg_g": 1000.0, "price": 5.90,  "hint": "1 batata doce média pesa ~200g a 250g"},
+    "TACO-87":  {"use_g": 500.0, "pkg_g": 1000.0, "price": 9.90,  "hint": "Batata baroa / mandioquinha para cremes, sopas e purês"},
+    "TACO-130": {"use_g": 1000.0, "pkg_g": 1000.0, "price": 6.50, "hint": "Pacote de mandioca a vácuo tem 1 kg"},
+    "TACO-157": {"use_g": 300.0, "pkg_g": 1000.0, "price": 7.90,  "hint": "1 tomate médio pesa ~100g (3 tomates = ~300g)"},
+    "TACO-158": {"use_g": 140.0, "pkg_g": 140.0,  "price": 4.50,  "hint": "1 latinha de extrato de tomate tem 140g ou 350g"},
+    "TACO-159": {"use_g": 340.0, "pkg_g": 340.0,  "price": 3.90,  "hint": "1 sachê padrão de molho de tomate tem 340g"},
+    "TACO-110": {"use_g": 200.0, "pkg_g": 1000.0, "price": 5.90,  "hint": "1 cenoura média pesa ~120g a 150g"},
+    "C0020L":   {"use_g": 10.0,  "pkg_g": 1000.0, "price": 3.50,  "hint": "1 pacote de sal tem 1000g (1 colher de chá rasa = ~5g)"},
+    "TACO-517": {"use_g": 50.0,  "pkg_g": 1000.0, "price": 4.50,  "hint": "1 pacote de sal grosso tem 1000g"},
+    "TACO-260": {"use_g": 30.0,  "pkg_g": 500.0,  "price": 38.00, "hint": "1 garrafa de azeite tem 500ml (1 colher de sopa = ~15ml)"},
+    "TACO-272": {"use_g": 50.0,  "pkg_g": 900.0,  "price": 7.50,  "hint": "1 garrafa pet de óleo de soja tem 900ml (1 colher de sopa = ~15ml)"},
+    "TACO-269": {"use_g": 50.0,  "pkg_g": 900.0,  "price": 9.90,  "hint": "1 garrafa de óleo de girassol tem 900ml"},
+    "TACO-270": {"use_g": 50.0,  "pkg_g": 900.0,  "price": 9.90,  "hint": "1 garrafa de óleo de milho tem 900ml"},
+
+    # --- LATICÍNIOS, OVOS & QUEIJOS ---
     "TACO-453": {"use_g": 395.0, "pkg_g": 395.0, "price": 7.90, "hint": "1 lata ou caixinha padrão tem 395g"},
     "TACO-447": {"use_g": 200.0, "pkg_g": 200.0, "price": 4.20, "hint": "1 caixinha padrão tem 200g"},
     "TACO-459": {"use_g": 60.0,  "pkg_g": 380.0, "price": 18.90, "hint": "1 lata/pacote tem 380g ou 400g (1 colher de sopa cheia = ~15g)"},
@@ -468,26 +561,51 @@ _SMART_PACKAGE_DEFAULTS = {
     "TACO-262": {"use_g": 20.0,  "pkg_g": 200.0, "price": 12.90, "hint": "1 tablete ou pote tem 200g (1 colher de sopa = ~20g)"},
     "TACO-261": {"use_g": 20.0,  "pkg_g": 200.0, "price": 12.90, "hint": "1 tablete ou pote tem 200g (1 colher de sopa = ~20g)"},
     "TACO-264": {"use_g": 40.0,  "pkg_g": 500.0, "price": 8.50, "hint": "1 pote padrão tem 500g (1 colher de sopa = ~20g)"},
-    "TACO-489": {"use_g": 150.0, "pkg_g": 1500.0, "price": 24.00, "hint": "1 ovo pesa ~50g (3 ovos = 150g). Cartela com 30 ovos = 1500g; Dúzia (12 ovos) = 600g"},
+    "TACO-489": {"use_g": 150.0, "pkg_g": 1500.0, "price": 24.00, "hint": "1 ovo pesa ~50g (3 ovos = 150g). Cartela com 30 ovos = 1500g; Dúzia = 600g"},
     "TACO-487": {"use_g": 60.0,  "pkg_g": 600.0, "price": 12.00, "hint": "1 gema pesa ~20g (3 gemas = 60g). Dúzia de ovos = 600g"},
     "TACO-486": {"use_g": 90.0,  "pkg_g": 600.0, "price": 12.00, "hint": "1 clara pesa ~30g (3 claras = 90g). Dúzia de ovos = 600g"},
+    "TACO-463": {"use_g": 200.0, "pkg_g": 1000.0, "price": 44.00, "hint": "Queijo muçarela fatiado ou peça inteira"},
+    "TACO-464": {"use_g": 50.0,  "pkg_g": 100.0,  "price": 8.90,  "hint": "Pacotinho de queijo parmesão ralado tem 50g ou 100g"},
+    "TACO-461": {"use_g": 200.0, "pkg_g": 500.0,  "price": 18.00, "hint": "Queijo minas frescal"},
+    "TACO-468": {"use_g": 100.0, "pkg_g": 200.0,  "price": 8.50,  "hint": "1 copo padrão de requeijão tem 200g"},
+    "TACO-469": {"use_g": 200.0, "pkg_g": 400.0,  "price": 12.90, "hint": "Pote de ricota fresca"},
+    "C0009G":   {"use_g": 150.0, "pkg_g": 150.0,  "price": 9.90,  "hint": "1 pote padrão de cream cheese tem 150g"},
+    "TACO-448": {"use_g": 170.0, "pkg_g": 170.0,  "price": 3.90,  "hint": "1 potinho de iogurte natural tem 170g"},
+    "TACO-522": {"use_g": 200.0, "pkg_g": 1000.0, "price": 22.00, "hint": "Caixa de chantilly de 1 Litro ou caixinha de 200ml"},
+
+    # --- FARINHAS, AMIDOS & FERMENTOS ---
     "TACO-35":  {"use_g": 240.0, "pkg_g": 1000.0, "price": 5.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~120g)"},
     "TACO-42":  {"use_g": 30.0,  "pkg_g": 200.0, "price": 6.50, "hint": "1 caixinha pequena tem 200g (1 colher de sopa = ~15g)"},
+    "TACO-146": {"use_g": 200.0, "pkg_g": 1000.0, "price": 9.90, "hint": "1 pacote de polvilho doce tem 500g ou 1 kg"},
+    "TACO-7":   {"use_g": 100.0, "pkg_g": 200.0, "price": 5.90, "hint": "1 caixa ou pacote de aveia em flocos tem 170g ou 200g"},
+    "TACO-43":  {"use_g": 200.0, "pkg_g": 500.0, "price": 4.50, "hint": "1 pacote de fubá tem 500g ou 1 kg"},
+    "TACO-513": {"use_g": 15.0,  "pkg_g": 100.0, "price": 4.90, "hint": "1 potinho de fermento tem 100g (1 tampinha / colher de sopa = 15g)"},
+    "TACO-514": {"use_g": 10.0,  "pkg_g": 10.0,  "price": 1.90, "hint": "1 sachê de fermento biológico seco tem 10g"},
+
+    # --- AÇÚCARES & CHOCOLATES ---
     "TACO-494": {"use_g": 180.0, "pkg_g": 1000.0, "price": 4.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~180g)"},
     "TACO-492": {"use_g": 180.0, "pkg_g": 1000.0, "price": 4.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~180g)"},
+    "TACO-493": {"use_g": 180.0, "pkg_g": 1000.0, "price": 8.90, "hint": "1 pacote de açúcar mascavo tem 500g ou 1 kg"},
+    "TACO-507": {"use_g": 100.0, "pkg_g": 300.0, "price": 18.00, "hint": "1 bisnaga ou pote de mel tem ~300g"},
+    "TACO-503": {"use_g": 50.0,  "pkg_g": 500.0, "price": 9.90, "hint": "Pote de glucose/glicose de milho tem 500g"},
     "C0011K":   {"use_g": 50.0,  "pkg_g": 200.0, "price": 13.90, "hint": "1 caixinha padrão tem 200g (1 colher de sopa = ~15g)"},
     "C0090K":   {"use_g": 45.0,  "pkg_g": 200.0, "price": 18.90, "hint": "1 pacote de 200g (1 colher de sopa = ~15g)"},
-    "TACO-495": {"use_g": 200.0, "pkg_g": 1000.0, "price": 49.90, "hint": "1 barra de confeitaria de 1 kg = 1000g (barra pequena de mercado = 90g)"},
-    "TACO-498": {"use_g": 200.0, "pkg_g": 1000.0, "price": 54.90, "hint": "1 barra de confeitaria de 1 kg = 1000g (barra pequena de mercado = 90g)"},
+    "TACO-491": {"use_g": 60.0,  "pkg_g": 400.0, "price": 8.90, "hint": "1 lata de achocolatado tem 400g"},
+    "TACO-495": {"use_g": 200.0, "pkg_g": 1000.0, "price": 49.90, "hint": "1 barra de confeitaria de 1 kg = 1000g"},
+    "TACO-498": {"use_g": 200.0, "pkg_g": 1000.0, "price": 54.90, "hint": "1 barra de confeitaria de 1 kg = 1000g"},
+    "C0164K":   {"use_g": 200.0, "pkg_g": 1000.0, "price": 52.90, "hint": "1 barra de chocolate branco de 1 kg"},
     "C0194K":   {"use_g": 80.0,  "pkg_g": 150.0, "price": 6.90, "hint": "1 pacotinho de granulado costuma ter 150g ou 500g"},
     "C0128K":   {"use_g": 100.0, "pkg_g": 350.0, "price": 24.90, "hint": "1 pote médio de Nutella tem 350g (pote grande = 650g)"},
     "TACO-501": {"use_g": 200.0, "pkg_g": 400.0, "price": 11.90, "hint": "1 pote ou lata padrão de doce de leite tem 400g"},
+    "TACO-198": {"use_g": 200.0, "pkg_g": 300.0, "price": 7.90, "hint": "Tablete de goiabada tem 300g ou 500g"},
+    "TACO-515": {"use_g": 12.0,  "pkg_g": 24.0,  "price": 3.90, "hint": "1 pacotinho de gelatina incolor tem 12g (caixa com 2 = 24g)"},
+    "C0778B":   {"use_g": 5.0,   "pkg_g": 30.0,  "price": 4.50, "hint": "1 saquinho de canela em pó tem 30g ou 50g"},
+    "C0027L":   {"use_g": 10.0,  "pkg_g": 30.0,  "price": 6.90, "hint": "1 frasquinho de essência de baunilha tem 30ml"},
+
+    # --- FRUTAS & OLEAGINOSAS ---
     "TACO-239": {"use_g": 250.0, "pkg_g": 250.0, "price": 10.00, "hint": "1 bandeja de morango de mercado costuma ter 250g"},
-    "TACO-513": {"use_g": 15.0,  "pkg_g": 100.0, "price": 4.90, "hint": "1 potinho de fermento tem 100g (1 tampinha / colher de sopa = 15g)"},
     "TACO-523": {"use_g": 200.0, "pkg_g": 200.0, "price": 5.50, "hint": "1 garrafinha de leite de coco tem 200ml"},
     "TACO-590": {"use_g": 100.0, "pkg_g": 100.0, "price": 6.90, "hint": "1 pacotinho de coco ralado tem 100g"},
-    "C0020L":   {"use_g": 5.0,   "pkg_g": 1000.0, "price": 3.50, "hint": "1 pacote de sal tem 1000g (1 colher de chá rasa = ~5g)"},
-    "TACO-517": {"use_g": 50.0,  "pkg_g": 1000.0, "price": 4.50, "hint": "1 pacote de sal grosso tem 1000g"},
 }
 
 
