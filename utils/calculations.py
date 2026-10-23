@@ -1,5 +1,7 @@
 from decimal import Decimal, ROUND_HALF_UP
 
+_MODULE_VERSION = "2026.10.23.v3"
+
 VDR = {
     "Energia (kcal)": 2000.0,
     "Carboidrato total (g)": 300.0,

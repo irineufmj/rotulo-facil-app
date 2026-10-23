@@ -10,9 +10,44 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+import importlib
+import utils.db as _mod_db
+import utils.data_loader as _mod_data_loader
+import utils.auth as _mod_auth
+import utils.calculations as _mod_calculations
+import utils.ui as _mod_ui
+
+# Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
+_EXPECTED_UTILS_VERSION = "2026.10.23.v3"
+for _mod, _req_attr in (
+    (_mod_db, "consume_user_credit_sql"),
+    (_mod_data_loader, "get_ingredient_smart_defaults"),
+    (_mod_auth, "consume_user_credit"),
+    (_mod_calculations, "calculate_monthly_sales_goal"),
+    (_mod_ui, "inject_custom_css"),
+):
+    if getattr(_mod, "_MODULE_VERSION", None) != _EXPECTED_UTILS_VERSION or not hasattr(_mod, _req_attr):
+        try:
+            importlib.reload(_mod)
+        except Exception:
+            pass
 
 from utils.auth import authenticate_user, register_user, admin_update_user, admin_delete_user, load_users, recover_password_email, consume_user_credit
-from utils.data_loader import load_unified_data, load_saved_recipes, save_recipe, delete_recipe, get_user_plan_status, can_user_save_recipe
+from utils.data_loader import (
+    load_unified_data, load_saved_recipes, save_recipe, delete_recipe,
+    get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
+    TOP_CONFECTIONERY_MAP, filter_and_rank_ingredients, format_ingredient_option_label,
+)
+try:
+    from utils.data_loader import get_ingredient_smart_defaults
+except ImportError:
+    def get_ingredient_smart_defaults(food: dict) -> dict:
+        return {
+            "use_g": 100.0,
+            "pkg_g": 1000.0,
+            "price": 12.00,
+            "hint": "Dica de medidas: 1 colher de sopa = ~15g | 1 xícara = ~150g | 1 pacote de 1 kg = 1000g"
+        }
 from utils.calculations import (
     get_num_val, round_anvisa, VDR,
     calculate_financial_breakdown, calculate_cmv, calculate_ingredient_cost,
@@ -904,14 +939,6 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
     if step_cur == 1:
         st.markdown("### 🥣 Passo 1 de 3: O que vai na sua receita?")
         st.caption("Escolha cada ingrediente que você usa, diga quanto colocou na receita e quanto pagou no pacote fechado.")
-
-        from utils.data_loader import (
-            get_recipes_as_ingredients,
-            TOP_CONFECTIONERY_MAP,
-            filter_and_rank_ingredients,
-            format_ingredient_option_label,
-            get_ingredient_smart_defaults,
-        )
 
         curr_user = st.session_state.get("username", "")
         sub_recipes = get_recipes_as_ingredients(db_lock, curr_user)

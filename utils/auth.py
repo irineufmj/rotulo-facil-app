@@ -13,6 +13,7 @@ import streamlit as st
 from utils.data_loader import load_saved_recipes, safe_save_json, RECIPES_JSON_PATH
 
 logger = logging.getLogger(__name__)
+_MODULE_VERSION = "2026.10.23.v3"
 
 EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 

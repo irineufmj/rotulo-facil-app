@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+_MODULE_VERSION = "2026.10.23.v3"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -347,6 +348,8 @@ _TOP_CONFECTIONERY_LIST = [
     ("TACO-515", "⭐ Gelatina em Pó", "🍫 Chocolates, Açúcares & Doces"),
     ("C0778B",   "⭐ Canela em Pó", "🍫 Chocolates, Açúcares & Doces"),
     ("C0027L",   "⭐ Extrato / Essência de Baunilha", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0020L",   "⭐ Sal Refinado (Sal de Cozinha)", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-517", "⭐ Sal Grosso", "🌾 Farinhas, Amidos & Grãos"),
 ]
 
 TOP_CONFECTIONERY_MAP = {
@@ -392,7 +395,7 @@ def is_pure_culinary_ingredient(food: dict) -> bool:
         return True
 
     group = food.get("g", "")
-    if group in ("Alimentos para fins especiais", "Pescados e Frutos do mar", "Carnes e derivados", "Alimentos industrializados"):
+    if group in ("Alimentos para fins especiais",):
         return False
 
     desc = (food.get("d", "") or "").strip()
@@ -483,6 +486,8 @@ _SMART_PACKAGE_DEFAULTS = {
     "TACO-513": {"use_g": 15.0,  "pkg_g": 100.0, "price": 4.90, "hint": "1 potinho de fermento tem 100g (1 tampinha / colher de sopa = 15g)"},
     "TACO-523": {"use_g": 200.0, "pkg_g": 200.0, "price": 5.50, "hint": "1 garrafinha de leite de coco tem 200ml"},
     "TACO-590": {"use_g": 100.0, "pkg_g": 100.0, "price": 6.90, "hint": "1 pacotinho de coco ralado tem 100g"},
+    "C0020L":   {"use_g": 5.0,   "pkg_g": 1000.0, "price": 3.50, "hint": "1 pacote de sal tem 1000g (1 colher de chá rasa = ~5g)"},
+    "TACO-517": {"use_g": 50.0,  "pkg_g": 1000.0, "price": 4.50, "hint": "1 pacote de sal grosso tem 1000g"},
 }
 
 

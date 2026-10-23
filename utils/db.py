@@ -8,10 +8,35 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
+_MODULE_VERSION = "2026.10.23.v3"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
 _db_initialized = False
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    if val is None or pd.isna(val):
+        return float(default)
+    try:
+        return float(val)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(val, default: int = 0) -> int:
+    if val is None or pd.isna(val):
+        return int(default)
+    try:
+        return int(float(val))
+    except Exception:
+        return int(default)
+
+
+def _safe_str(val, default: str = "") -> str:
+    if val is None or pd.isna(val):
+        return default
+    return str(val)
 
 def log_db_error(msg: str, e: Exception):
     try:
@@ -238,13 +263,22 @@ def load_users_sql(db_lock) -> list:
             df = pd.read_sql("SELECT * FROM usuarios", engine)
             users = df.to_dict(orient="records")
             
-            # Converter campos JSON textuais de volta para tipos Python
+            # Converter campos JSON textuais e tratar NULL/NaN do pandas de volta para tipos Python seguros
             for u in users:
-                u["is_admin"] = bool(u.get("is_admin", False))
-                u["creditos_disponiveis"] = int(u.get("creditos_disponiveis", 1))
-                if u.get("transacoes_processadas"):
+                u["username"] = _safe_str(u.get("username"), "")
+                u["email"] = _safe_str(u.get("email"), "")
+                u["cpf"] = _safe_str(u.get("cpf"), "")
+                u["password_hash"] = _safe_str(u.get("password_hash"), "")
+                u["id_transacao_pagamento"] = _safe_str(u.get("id_transacao_pagamento"), "")
+                u["lgpd_accepted_at"] = _safe_str(u.get("lgpd_accepted_at"), "")
+                u["lgpd_version"] = _safe_str(u.get("lgpd_version"), "1.0")
+                is_adm_raw = u.get("is_admin", False)
+                u["is_admin"] = False if (is_adm_raw is None or pd.isna(is_adm_raw)) else bool(is_adm_raw)
+                u["creditos_disponiveis"] = _safe_int(u.get("creditos_disponiveis"), 1)
+                tx_raw = u.get("transacoes_processadas")
+                if tx_raw and not pd.isna(tx_raw):
                     try:
-                        u["transacoes_processadas"] = json.loads(u["transacoes_processadas"])
+                        u["transacoes_processadas"] = json.loads(tx_raw) if isinstance(tx_raw, str) else list(tx_raw)
                     except Exception:
                         u["transacoes_processadas"] = []
                 else:
@@ -504,26 +538,36 @@ def load_recipes_sql(db_lock, username: str = "") -> list:
 
             recipes = df.to_dict(orient="records")
             
-            # Converter colunas de texto JSON e numéricas para objetos Python
+            # Converter colunas de texto JSON e numéricas para objetos Python (tratando NULL/NaN do pandas)
             for r in recipes:
-                r["peso_embalagem"] = float(r.get("peso_embalagem", 0.0) or 0.0)
-                r["weight_final"] = float(r.get("weight_final", 0.0) or 0.0)
-                r["portion_size"] = float(r.get("portion_size", 0.0) or 0.0)
+                r["nome"] = _safe_str(r.get("nome"), "")
+                r["username"] = _safe_str(r.get("username"), "")
+                r["nome_produto"] = _safe_str(r.get("nome_produto"), "")
+                r["case_measure"] = _safe_str(r.get("case_measure"), "1 unidade")
+                r["gluten_opt"] = _safe_str(r.get("gluten_opt"), "NÃO CONTÉM GLÚTEN")
+                r["lactose_opt"] = _safe_str(r.get("lactose_opt"), "NÃO CONTÉM LACTOSE")
+                r["product_type"] = _safe_str(r.get("product_type"), "Sólido ou Semissólido")
+                r["date_saved"] = _safe_str(r.get("date_saved"), "")
+
+                r["peso_embalagem"] = _safe_float(r.get("peso_embalagem"), 0.0)
+                r["weight_final"] = _safe_float(r.get("weight_final"), 0.0)
+                r["portion_size"] = _safe_float(r.get("portion_size"), 60.0)
                 
                 # Campos financeiros
-                r["custo_embalagem"] = float(r.get("custo_embalagem", 0.0) or 0.0)
-                r["tempo_preparo_min"] = float(r.get("tempo_preparo_min", 0.0) or 0.0)
-                r["custo_hora_mao_obra"] = float(r.get("custo_hora_mao_obra", 0.0) or 0.0)
-                r["custo_operacional_pct"] = float(r.get("custo_operacional_pct", 0.0) or 0.0)
-                r["taxas_venda_pct"] = float(r.get("taxas_venda_pct", 0.0) or 0.0)
-                r["margem_desejada_pct"] = float(r.get("margem_desejada_pct", 30.0) or 30.0)
-                r["preco_venda_praticado"] = float(r.get("preco_venda_praticado", 0.0) or 0.0)
+                r["custo_embalagem"] = _safe_float(r.get("custo_embalagem"), 0.0)
+                r["tempo_preparo_min"] = _safe_float(r.get("tempo_preparo_min"), 0.0)
+                r["custo_hora_mao_obra"] = _safe_float(r.get("custo_hora_mao_obra"), 0.0)
+                r["custo_operacional_pct"] = _safe_float(r.get("custo_operacional_pct"), 0.0)
+                r["taxas_venda_pct"] = _safe_float(r.get("taxas_venda_pct"), 0.0)
+                r["margem_desejada_pct"] = _safe_float(r.get("margem_desejada_pct"), 30.0)
+                r["preco_venda_praticado"] = _safe_float(r.get("preco_venda_praticado"), 0.0)
                 
                 # Deserializar ingredientes e alérgenos
                 for field in ["ingredients", "allergens_direct", "allergens_deriv", "allergens_may_contain"]:
-                    if r.get(field):
+                    raw_f = r.get(field)
+                    if raw_f and not pd.isna(raw_f):
                         try:
-                            r[field] = json.loads(r[field])
+                            r[field] = json.loads(raw_f) if isinstance(raw_f, str) else list(raw_f)
                         except Exception:
                             r[field] = []
                     else:
