@@ -444,18 +444,62 @@ def classify_ingredient_category(food: dict) -> str:
 
 def format_ingredient_option_label(food: dict) -> str:
     """
-    Formata o rótulo do ingrediente no seletor destacando os Top Insumos da Confeitaria
-    com seus nomes comerciais populares.
+    Formata o rótulo do ingrediente no seletor usando linguagem limpa e amigável para pessoas leigas,
+    sem códigos técnicos confusos.
     """
     code = food.get("c", "")
     clean_d = (food.get("d", "") or "").rstrip(", ").strip()
     source = food.get("f", "")
     if code in TOP_CONFECTIONERY_MAP:
-        alias = TOP_CONFECTIONERY_MAP[code]["alias"]
-        return f"{alias} — [{source}: {clean_d}]"
+        return TOP_CONFECTIONERY_MAP[code]["alias"]
     if source in ("CADASTRO", "Usuário"):
-        return f"➕ {clean_d} [{source}]"
-    return f"[{source}] {clean_d}"
+        return f"➕ {clean_d}"
+    return clean_d
+
+
+_SMART_PACKAGE_DEFAULTS = {
+    "TACO-453": {"use_g": 395.0, "pkg_g": 395.0, "price": 7.90, "hint": "1 lata ou caixinha padrão tem 395g"},
+    "TACO-447": {"use_g": 200.0, "pkg_g": 200.0, "price": 4.20, "hint": "1 caixinha padrão tem 200g"},
+    "TACO-459": {"use_g": 60.0,  "pkg_g": 380.0, "price": 18.90, "hint": "1 lata/pacote tem 380g ou 400g (1 colher de sopa cheia = ~15g)"},
+    "TACO-458": {"use_g": 240.0, "pkg_g": 1000.0, "price": 5.80, "hint": "1 caixa de 1 Litro = 1000ml (1 xícara = 240ml)"},
+    "TACO-262": {"use_g": 20.0,  "pkg_g": 200.0, "price": 12.90, "hint": "1 tablete ou pote tem 200g (1 colher de sopa = ~20g)"},
+    "TACO-261": {"use_g": 20.0,  "pkg_g": 200.0, "price": 12.90, "hint": "1 tablete ou pote tem 200g (1 colher de sopa = ~20g)"},
+    "TACO-264": {"use_g": 40.0,  "pkg_g": 500.0, "price": 8.50, "hint": "1 pote padrão tem 500g (1 colher de sopa = ~20g)"},
+    "TACO-489": {"use_g": 150.0, "pkg_g": 1500.0, "price": 24.00, "hint": "1 ovo pesa ~50g (3 ovos = 150g). Cartela com 30 ovos = 1500g; Dúzia (12 ovos) = 600g"},
+    "TACO-487": {"use_g": 60.0,  "pkg_g": 600.0, "price": 12.00, "hint": "1 gema pesa ~20g (3 gemas = 60g). Dúzia de ovos = 600g"},
+    "TACO-486": {"use_g": 90.0,  "pkg_g": 600.0, "price": 12.00, "hint": "1 clara pesa ~30g (3 claras = 90g). Dúzia de ovos = 600g"},
+    "TACO-35":  {"use_g": 240.0, "pkg_g": 1000.0, "price": 5.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~120g)"},
+    "TACO-42":  {"use_g": 30.0,  "pkg_g": 200.0, "price": 6.50, "hint": "1 caixinha pequena tem 200g (1 colher de sopa = ~15g)"},
+    "TACO-494": {"use_g": 180.0, "pkg_g": 1000.0, "price": 4.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~180g)"},
+    "TACO-492": {"use_g": 180.0, "pkg_g": 1000.0, "price": 4.90, "hint": "1 pacote de 1 kg = 1000g (1 xícara de chá = ~180g)"},
+    "C0011K":   {"use_g": 50.0,  "pkg_g": 200.0, "price": 13.90, "hint": "1 caixinha padrão tem 200g (1 colher de sopa = ~15g)"},
+    "C0090K":   {"use_g": 45.0,  "pkg_g": 200.0, "price": 18.90, "hint": "1 pacote de 200g (1 colher de sopa = ~15g)"},
+    "TACO-495": {"use_g": 200.0, "pkg_g": 1000.0, "price": 49.90, "hint": "1 barra de confeitaria de 1 kg = 1000g (barra pequena de mercado = 90g)"},
+    "TACO-498": {"use_g": 200.0, "pkg_g": 1000.0, "price": 54.90, "hint": "1 barra de confeitaria de 1 kg = 1000g (barra pequena de mercado = 90g)"},
+    "C0194K":   {"use_g": 80.0,  "pkg_g": 150.0, "price": 6.90, "hint": "1 pacotinho de granulado costuma ter 150g ou 500g"},
+    "C0128K":   {"use_g": 100.0, "pkg_g": 350.0, "price": 24.90, "hint": "1 pote médio de Nutella tem 350g (pote grande = 650g)"},
+    "TACO-501": {"use_g": 200.0, "pkg_g": 400.0, "price": 11.90, "hint": "1 pote ou lata padrão de doce de leite tem 400g"},
+    "TACO-239": {"use_g": 250.0, "pkg_g": 250.0, "price": 10.00, "hint": "1 bandeja de morango de mercado costuma ter 250g"},
+    "TACO-513": {"use_g": 15.0,  "pkg_g": 100.0, "price": 4.90, "hint": "1 potinho de fermento tem 100g (1 tampinha / colher de sopa = 15g)"},
+    "TACO-523": {"use_g": 200.0, "pkg_g": 200.0, "price": 5.50, "hint": "1 garrafinha de leite de coco tem 200ml"},
+    "TACO-590": {"use_g": 100.0, "pkg_g": 100.0, "price": 6.90, "hint": "1 pacotinho de coco ralado tem 100g"},
+}
+
+
+def get_ingredient_smart_defaults(food: dict) -> dict:
+    """
+    Retorna sugestões inteligentes de peso usado na receita, peso da embalagem do mercado,
+    preço médio e dica prática em medidas caseiras (lata, caixinha, colher, xícara).
+    """
+    code = (food or {}).get("c", "")
+    if code in _SMART_PACKAGE_DEFAULTS:
+        return _SMART_PACKAGE_DEFAULTS[code].copy()
+    return {
+        "use_g": 100.0,
+        "pkg_g": 1000.0,
+        "price": 12.00,
+        "hint": "Dica de medidas: 1 colher de sopa = ~15g | 1 xícara = ~150g | 1 pacote de 1 kg = 1000g"
+    }
 
 
 def filter_and_rank_ingredients(

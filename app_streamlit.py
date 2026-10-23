@@ -834,459 +834,367 @@ if st.query_params.get("status") == "approved":
     st.query_params.clear()
 
 # ==============================================================================
-# TAB 1: FICHA TÉCNICA & PRECIFICAÇÃO DE PRODUTOS (PRODUTO PRINCIPAL)
+# TAB 1: FICHA TÉCNICA & PRECIFICAÇÃO DE PRODUTOS (PASSO A PASSO SIMPLES)
 # ==============================================================================
 if st.session_state.selected_page == "Ficha Técnica & Precificação":
-    st.markdown('<h1 class="main-title">Ficha Técnica & Precificação</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Descubra o custo real da sua receita, quanto cobrar em cada canal e quanto sobra de lucro livre no seu bolso.</p>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">Calculadora de Preço da Sua Receita</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Descubra quanto você gasta e por quanto vender seus produtos caseiros em 3 passos simples.</p>', unsafe_allow_html=True)
+
+    if "wizard_step" not in st.session_state:
+        st.session_state.wizard_step = 1 if len(st.session_state.recipe) == 0 else 3
 
     model_recipes = get_model_recipes(foods_data)
 
-    # --- ESTADO VAZIO ACOLHEDOR / RECEITAS MODELO EM 1 CLIQUE ---
+    # --- ATALHO DE RECEITAS PRONTAS (1 CLIQUE) ---
     if len(st.session_state.recipe) == 0:
         st.markdown("""
-        <div style="background: linear-gradient(135deg, #f0fdfa 0%, #e0f2fe 100%); border: 2px solid #00a896; border-radius: 16px; padding: 18px 20px; margin-bottom: 18px;">
-            <h4 style="margin: 0 0 6px 0; color: #0b3b4c;">👋 Primeira vez por aqui? Comece em 1 clique!</h4>
+        <div style="background: linear-gradient(135deg, #f0fdfa 0%, #e0f2fe 100%); border: 2px solid #00a896; border-radius: 16px; padding: 16px 20px; margin-bottom: 14px;">
+            <h4 style="margin: 0 0 4px 0; color: #0b3b4c;">👋 Quer ver como funciona em 1 clique?</h4>
             <p style="margin: 0; font-size: 0.92rem; color: #374151;">
-                Toque em uma das receitas prontas abaixo para ver na hora o custo de cada ingrediente, o preço sugerido e o lucro real — ou adicione seus próprios ingredientes no Passo 1.
+                Toque em uma receita pronta abaixo para ver um exemplo completo, ou comece a montar a sua no <strong>Passo 1</strong> logo abaixo:
             </p>
         </div>
         """, unsafe_allow_html=True)
         t_cols = st.columns(4)
         for idx_t, (t_key, tpl) in enumerate(model_recipes.items()):
-            if t_cols[idx_t].button(tpl["label"], key=f"btn_tpl_empty_{t_key}", type="primary" if idx_t == 0 else "secondary", use_container_width=True):
+            if t_cols[idx_t].button(tpl["label"], key=f"btn_tpl_empty_{t_key}", use_container_width=True):
                 apply_model_recipe(tpl)
-                st.toast(f"Receita modelo '{tpl['nome_produto']}' carregada!")
+                st.session_state.wizard_step = 3
+                st.toast(f"Receita '{tpl['nome_produto']}' carregada! Veja o resultado no Passo 3.")
                 st.rerun()
-    else:
-        with st.expander("✨ Quer testar outra Receita Modelo pronta? (Brigadeiro, Bolo no Pote, Pão de Mel, Geleia)"):
-            t_cols = st.columns(4)
-            for idx_t, (t_key, tpl) in enumerate(model_recipes.items()):
-                if t_cols[idx_t].button(tpl["label"], key=f"btn_tpl_bar_{t_key}", use_container_width=True):
-                    apply_model_recipe(tpl)
-                    st.toast(f"Receita modelo '{tpl['nome_produto']}' carregada!")
-                    st.rerun()
 
-        # --- RESUMO NO TOPO (MOBILE-FIRST HERO BANNER) ---
-        ref_unit_top = st.session_state.peso_embalagem if st.session_state.peso_embalagem > 0 else st.session_state.weight_final
-        num_units_top = max(1.0, st.session_state.weight_final / ref_unit_top) if ref_unit_top > 0 else 1.0
-        fb_top = calculate_financial_breakdown(
-            recipe_ingredients=st.session_state.recipe,
-            packaging_cost=st.session_state.custo_embalagem,
-            prep_time_min=st.session_state.tempo_preparo_min,
-            hourly_rate=st.session_state.custo_hora_mao_obra,
-            overhead_pct=st.session_state.custo_operacional_pct,
-            target_margin_pct=st.session_state.margem_desejada_pct,
-            sales_fees_pct=st.session_state.taxas_venda_pct,
-            num_units=num_units_top,
-            practiced_price=st.session_state.preco_venda_praticado
-        )
-        lucro_lote_top = fb_top["prac_net_profit"] * num_units_top
-        st.markdown(f"""
-        <div class="hero-profit-banner">
-            <div class="hero-profit-item">
-                <div class="hero-profit-label">Custo Total / Unidade</div>
-                <div class="hero-profit-val">R$ {fb_top['unit_total_cost']:.2f}</div>
-                <div class="hero-profit-sub">Ingredientes: R$ {fb_top['unit_cmv']:.2f}/un</div>
-            </div>
-            <div class="hero-profit-item">
-                <div class="hero-profit-label">🎯 Preço Ideal Sugerido</div>
-                <div class="hero-profit-val">R$ {fb_top['suggested_unit_price']:.2f}</div>
-                <div class="hero-profit-sub">Mínimo s/ prejuízo: R$ {fb_top['min_unit_price']:.2f}</div>
-            </div>
-            <div class="hero-profit-item">
-                <div class="hero-profit-label">💰 Seu Lucro por Unidade</div>
-                <div class="hero-profit-val">R$ {fb_top['prac_net_profit']:.2f}</div>
-                <div class="hero-profit-sub">Margem livre: {fb_top['prac_net_margin_pct']:.1f}%</div>
-            </div>
-            <div class="hero-profit-item">
-                <div class="hero-profit-label">Lucro do Lote ({num_units_top:.0f} un)</div>
-                <div class="hero-profit-val">R$ {lucro_lote_top:.2f}</div>
-                <div class="hero-profit-sub">Custo do lote: R$ {fb_top['total_production_cost']:.2f}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # --- BARRA VISUAL DOS 3 PASSOS ---
+    step_cur = int(st.session_state.get("wizard_step", 1))
+    s_col1, s_col2, s_col3 = st.columns(3)
+    with s_col1:
+        if st.button(
+            f"1️⃣ Passo 1: Ingredientes ({len(st.session_state.recipe)})",
+            type="primary" if step_cur == 1 else "secondary",
+            use_container_width=True,
+            key="nav_step_1"
+        ):
+            st.session_state.wizard_step = 1
+            st.rerun()
+    with s_col2:
+        if st.button(
+            "2️⃣ Passo 2: Quantas Unidades Rende",
+            type="primary" if step_cur == 2 else "secondary",
+            use_container_width=True,
+            disabled=(len(st.session_state.recipe) == 0),
+            key="nav_step_2"
+        ):
+            st.session_state.wizard_step = 2
+            st.rerun()
+    with s_col3:
+        if st.button(
+            "3️⃣ Passo 3: Ver Preço de Venda",
+            type="primary" if step_cur == 3 else "secondary",
+            use_container_width=True,
+            disabled=(len(st.session_state.recipe) == 0),
+            key="nav_step_3"
+        ):
+            st.session_state.wizard_step = 3
+            st.rerun()
 
-    # Grid de Layout
-    col_input, col_label = st.columns([1.12, 0.88])
+    st.markdown("---")
 
-    with col_input:
-        st.markdown("### 🍳 1. Ingredientes da sua Receita")
+    # ==========================================================================
+    # PASSO 1: ESCOLHER OS INGREDIENTES DA RECEITA
+    # ==========================================================================
+    if step_cur == 1:
+        st.markdown("### 🥣 Passo 1 de 3: O que vai na sua receita?")
+        st.caption("Escolha cada ingrediente que você usa, diga quanto colocou na receita e quanto pagou no pacote fechado.")
 
         from utils.data_loader import (
             get_recipes_as_ingredients,
-            INGREDIENT_CATEGORIES,
             TOP_CONFECTIONERY_MAP,
             filter_and_rank_ingredients,
             format_ingredient_option_label,
+            get_ingredient_smart_defaults,
         )
 
         curr_user = st.session_state.get("username", "")
         sub_recipes = get_recipes_as_ingredients(db_lock, curr_user)
         dynamic_foods = foods_data + sub_recipes
 
-        col_cat, col_search = st.columns([1.0, 1.3])
-        selected_cat = col_cat.selectbox(
-            "Categoria de Insumo:",
-            options=INGREDIENT_CATEGORIES,
-            key="recipe_cat_filter",
-            help="Filtre rapidamente por laticínios, chocolates, farinhas, frutas ou veja os mais usados na confeitaria."
-        )
-        search_query = col_search.text_input(
-            "Buscar pelo nome (ex: Leite condensado, Ninho, Maisena):",
-            placeholder="Digite para filtrar (ex: Manteiga, Cacau, Morango)...",
+        search_query = st.text_input(
+            "🔎 Digite o nome do ingrediente para buscar (ou escolha na lista abaixo):",
+            placeholder="Ex: Leite condensado, Farinha, Ovo, Chocolate, Manteiga, Ninho...",
             key="recipe_search"
-        )
-
-        include_prepared = st.checkbox(
-            "🔎 Mostrar também pratos prontos e base completa da TBCA (6.265 itens)",
-            value=False,
-            key="inc_prep_dishes",
-            help="Por padrão ocultamos ~4.500 pratos prontos de restaurante (lasanhas, canelones, carnes temperadas) para você encontrar os ingredientes puros muito mais rápido."
         )
 
         filtered_for_recipe = filter_and_rank_ingredients(
             foods_list=dynamic_foods,
             search_query=search_query,
-            category=selected_cat,
-            include_prepared_dishes=include_prepared
+            category="⭐ Todos os Ingredientes Base",
+            include_prepared_dishes=False
         )
-
-        # Fallback inteligente: se não encontrou nos ingredientes puros mas existe na base completa, busca automaticamente
-        if not filtered_for_recipe and search_query.strip() and not include_prepared:
+        if not filtered_for_recipe and search_query.strip():
             filtered_for_recipe = filter_and_rank_ingredients(
                 foods_list=dynamic_foods,
                 search_query=search_query,
                 category="⭐ Todos os Ingredientes Base",
                 include_prepared_dishes=True
             )
-            if filtered_for_recipe:
-                st.caption("ℹ️ *Exibindo resultados da base completa da TBCA para sua busca.*")
 
         if not filtered_for_recipe:
-            st.warning("Nenhum ingrediente encontrado com esse termo. Tente outra palavra ou cadastre na aba 'Cadastrar Novo Ingrediente'.")
+            st.warning("Não encontramos esse ingrediente. Tente digitar apenas a primeira palavra (ex: 'Leite', 'Farinha', 'Chocolate').")
             selected_recipe_food = foods_data[0]
         else:
             selected_recipe_food = st.selectbox(
-                "Selecione o ingrediente (⭐ = Mais usados na confeitaria):",
+                "👉 Clique para escolher o ingrediente:",
                 options=filtered_for_recipe,
                 format_func=format_ingredient_option_label,
                 key="recipe_ing_selectbox"
             )
 
-        modo_custo_ing = st.radio(
-            "Como prefere informar o preço deste ingrediente?",
-            options=[
-                "📦 Pelo preço da embalagem que comprei (Mais fácil)",
-                "⚖️ Pelo preço por Quilo (R$/kg)"
-            ],
-            horizontal=True,
-            key="modo_custo_ing_radio",
-            help="Ex: Se você pagou R$ 7,90 numa lata de 395g de leite condensado, use a primeira opção e o sistema faz a conta sozinho!"
+        smart_def = get_ingredient_smart_defaults(selected_recipe_food)
+        ing_code_sel = selected_recipe_food.get("c", "default")
+
+        st.info(f"💡 **Dica de medida para este ingrediente:** {smart_def['hint']}")
+
+        c_p1, c_p2, c_p3 = st.columns(3)
+        ing_weight = c_p1.number_input(
+            "1. Quanto vai na receita? (g ou ml)",
+            min_value=1.0,
+            value=float(smart_def["use_g"]),
+            step=10.0,
+            key=f"add_use_g_{ing_code_sel}",
+            help="Quantidade em gramas ou ml que você coloca na receita."
+        )
+        pkg_price = c_p2.number_input(
+            "2. Quanto pagou no pacote fechado? (R$)",
+            min_value=0.0,
+            value=float(smart_def["price"]),
+            step=0.50,
+            key=f"add_pkg_p_{ing_code_sel}",
+            help="Preço que você pagou no mercado pelo pacote, lata, caixa ou cartela fechada."
+        )
+        pkg_qty = c_p3.number_input(
+            "3. Peso desse pacote fechado (g ou ml)",
+            min_value=1.0,
+            value=float(smart_def["pkg_g"]),
+            step=50.0,
+            key=f"add_pkg_q_{ing_code_sel}",
+            help="Peso total que vem escrito na embalagem comprada (ex: 395 para lata de leite condensado, 1000 para pacote de 1kg)."
         )
 
-        default_cost_kg = float(selected_recipe_food["n"].get("Custo (R$/kg)", 0.0) or 0.0)
+        ing_cost_init = convert_package_to_cost_kg(pkg_price, pkg_qty, "g")
+        custo_nesta_receita_preview = calculate_ingredient_cost(ing_weight, ing_cost_init, 1.0)
 
-        if modo_custo_ing.startswith("📦"):
-            c_p1, c_p2, c_p3, c_p4 = st.columns([1.1, 1.1, 1.0, 1.1])
-            ing_weight = c_p1.number_input("Usado na receita (g/ml):", min_value=0.1, value=395.0, step=10.0, key="add_ing_weight_pkg", help="Quantidade em gramas ou ml que vai na sua receita.")
-            pkg_price = c_p2.number_input("Paguei na embalagem (R$):", min_value=0.0, value=7.90 if default_cost_kg == 0 else round(default_cost_kg * 0.395, 2), step=0.50, key="add_pkg_price", help="Valor pago no pacote, lata, caixa ou dúzia fechada.")
-            pkg_qty = c_p3.number_input("Tamanho da emb.:", min_value=0.1, value=395.0, step=50.0, key="add_pkg_qty", help="Ex: 395 para uma lata de 395g, 1 para 1kg ou 1 dúzia.")
-            pkg_unit = c_p4.selectbox("Unidade da emb.:", options=["g", "kg", "ml", "L", "dúzia (12 ovos)", "cartela 30 ovos", "un (ovo ~50g)"], key="add_pkg_unit")
-            ing_cost_init = convert_package_to_cost_kg(pkg_price, pkg_qty, pkg_unit)
-            custo_nesta_receita_preview = calculate_ingredient_cost(ing_weight, ing_cost_init, 1.0)
-            st.caption(f"💡 **Conversão automática:** esta embalagem equivale a **R$ {ing_cost_init:.2f}/kg** → Custo dos **{ing_weight:.0f}g** nesta receita = **R$ {custo_nesta_receita_preview:.2f}**")
-        else:
-            col_w, col_cost = st.columns(2)
-            ing_weight = col_w.number_input("Peso usado na receita (g/ml):", min_value=0.1, value=100.0, step=10.0, key="add_ing_weight")
-            ing_cost_init = col_cost.number_input("Custo por Quilo (R$/kg):", min_value=0.0, value=default_cost_kg, step=1.0, key="add_ing_cost")
+        st.markdown(
+            f"<div style='background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:10px 14px; margin:8px 0 12px 0; color:#166534; font-size:0.95rem;'>"
+            f"💰 Usando <strong>{ing_weight:.0f}g/ml</strong> deste pacote, você gasta <strong>R$ {custo_nesta_receita_preview:.2f}</strong> na sua receita."
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
-        with st.expander("🍓 Este ingrediente tem perda ao descascar ou limpar? (Opcional — Fator de Correção)"):
-            perda_preparo_pct = st.slider(
-                "Perda de limpeza/descasque (%):",
-                min_value=0, max_value=60, value=0, step=5,
-                key="add_ing_loss_pct",
-                help="Ex: Morango ou abacaxi perde ~10% a 20% com cabinho/casca. Se não há perda (leite condensado, farinha, açúcar), deixe 0%."
-            )
-            yf_init = round(100.0 / (100.0 - perda_preparo_pct), 2) if perda_preparo_pct > 0 else 1.0
-            if perda_preparo_pct > 0:
-                st.caption(f"Fator de Correção aplicado: **{yf_init:.2f}x** (considera a perda no custo real).")
-
-        if st.button("➕ Adicionar Ingrediente à Receita", type="primary", use_container_width=True):
+        if st.button("➕ Colocar este Ingrediente na Minha Receita", type="primary", use_container_width=True):
+            friendly_name = format_ingredient_option_label(selected_recipe_food).replace("⭐ ", "").replace("➕ ", "")
             st.session_state.recipe.append({
                 "c": selected_recipe_food["c"],
-                "d": selected_recipe_food["d"],
+                "d": friendly_name,
                 "f": selected_recipe_food["f"],
                 "w": ing_weight,
                 "cost_kg": ing_cost_init,
-                "yield_factor": yf_init,
+                "yield_factor": 1.0,
                 "n": selected_recipe_food["n"]
             })
             st.session_state.calculated = True
             st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
             if st.session_state.yield_units > 0:
                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
-            st.toast(f"**{selected_recipe_food['d']}** adicionado à receita!")
+            st.toast(f"'{friendly_name}' adicionado à sua receita!")
             st.rerun()
 
-        st.markdown("---")
-
+        # --- LISTA SIMPLES DOS INGREDIENTES JÁ COLOCADOS NA RECEITA ---
         if len(st.session_state.recipe) > 0:
-            col_hdr, col_mul, col_div, col_clr = st.columns([2.0, 0.6, 0.6, 0.9])
-            col_hdr.markdown("### 🛒 Ingredientes na Receita")
-            if col_mul.button("✖️ 2x", type="secondary", use_container_width=True, help="Dobrar a receita inteira"):
-                for ing in st.session_state.recipe:
-                    ing["w"] *= 2.0
-                st.session_state.weight_final *= 2.0
-                st.session_state.yield_units = max(1, int(st.session_state.yield_units * 2))
-                st.rerun()
-            if col_div.button("➗ ½", type="secondary", use_container_width=True, help="Fazer meia receita"):
-                for ing in st.session_state.recipe:
-                    ing["w"] /= 2.0
-                st.session_state.weight_final /= 2.0
-                st.session_state.yield_units = max(1, int(round(st.session_state.yield_units / 2)))
-                st.rerun()
-            if col_clr.button("🗑️ Limpar", type="secondary", use_container_width=True):
+            st.markdown("---")
+            col_hdr, col_clr = st.columns([3.0, 1.0])
+            col_hdr.markdown(f"#### 🛒 Ingredientes já colocados na receita ({len(st.session_state.recipe)})")
+            if col_clr.button("🗑️ Limpar Tudo", type="secondary", use_container_width=True):
                 st.session_state.recipe = []
                 st.session_state.weight_final = 0.0
                 st.session_state.calculated = False
-                st.toast("Receita limpa!")
                 st.rerun()
 
             new_recipe_list = []
+            soma_custo_ing = 0.0
             for idx, ing in enumerate(st.session_state.recipe):
-                col_ing_name, col_ing_weight, col_ing_cost, col_ing_del = st.columns([2.1, 1.0, 1.0, 0.35])
-                safe_d = html.escape(ing['d'])
-                yf_item = float(ing.get('yield_factor', 1.0) or 1.0)
-                custo_item_receita = calculate_ingredient_cost(float(ing['w']), float(ing.get('cost_kg', 0.0)), yf_item)
-                fc_badge = f" · FC {yf_item:.2f}x" if yf_item > 1.01 else ""
-                col_ing_name.markdown(
-                    f"**{safe_d}**<br>"
-                    f"<span style='color:#059669; font-weight:700; font-size:0.84rem;'>Custo na receita: R$ {custo_item_receita:.2f}</span>"
-                    f"<small style='color:gray;'> ({html.escape(ing['f'])}{fc_badge})</small>",
-                    unsafe_allow_html=True
-                )
+                c_row1, c_row2, c_row3, c_row4 = st.columns([2.2, 1.1, 1.1, 0.45])
+                safe_d = html.escape(ing["d"])
+                yf_item = float(ing.get("yield_factor", 1.0) or 1.0)
+                w_atual = max(0.1, float(ing["w"]))
+                custo_item_atual = round(calculate_ingredient_cost(w_atual, float(ing.get("cost_kg", 0.0)), yf_item), 2)
+                soma_custo_ing += custo_item_atual
 
-                w_val = col_ing_weight.number_input("Qtd (g/ml)", min_value=0.1, value=float(ing['w']), key=f"fin_ing_w_{idx}_{ing['c']}", step=5.0)
-                c_val = col_ing_cost.number_input("R$/kg", min_value=0.0, value=float(ing.get('cost_kg', 0.0)), key=f"fin_ing_c_{idx}_{ing['c']}", step=1.0)
-                rem_val = col_ing_del.checkbox("🗑️", key=f"fin_ing_rem_{idx}_{ing['c']}", help="Marque para remover este ingrediente")
+                c_row1.markdown(f"<div style='padding-top:26px; font-weight:600; color:#111827;'>{idx+1}. {safe_d}</div>", unsafe_allow_html=True)
+                w_val = c_row2.number_input("Usado (g/ml)", min_value=0.1, value=w_atual, step=10.0, key=f"wiz_w_{idx}_{ing['c']}")
+                custo_reais_val = c_row3.number_input("Gasto na receita (R$)", min_value=0.0, value=float(custo_item_atual), step=0.50, key=f"wiz_cr_{idx}_{ing['c']}")
+                rem_clicked = c_row4.button("❌", key=f"wiz_del_{idx}_{ing['c']}", help="Remover este ingrediente")
 
-                if not rem_val:
+                if not rem_clicked:
                     ing_copy = ing.copy()
                     ing_copy["w"] = w_val
-                    ing_copy["cost_kg"] = c_val
+                    # Se o usuário alterou o gasto em R$ diretamente, recalcula o cost_kg nos bastidores
+                    if abs(custo_reais_val - custo_item_atual) > 0.01:
+                        ing_copy["cost_kg"] = round((custo_reais_val / ((w_val / 1000.0) * yf_item)), 2) if w_val > 0 else 0.0
                     new_recipe_list.append(ing_copy)
 
             if len(new_recipe_list) != len(st.session_state.recipe) or any(
-                n['w'] != o['w'] or n.get('cost_kg', 0.0) != o.get('cost_kg', 0.0)
+                n["w"] != o["w"] or n.get("cost_kg", 0.0) != o.get("cost_kg", 0.0)
                 for n, o in zip(new_recipe_list, st.session_state.recipe)
             ):
                 st.session_state.recipe = new_recipe_list
+                st.session_state.weight_final = sum(i["w"] for i in new_recipe_list)
                 st.session_state.calculated = True
                 st.rerun()
 
-            st.markdown("---")
-            st.markdown("### 📦 2. Rendimento, Embalagem & Seu Trabalho")
+            st.success(f"🛒 **Total gasto com ingredientes nesta receita: R$ {soma_custo_ing:.2f}**")
 
-            nome_produto = st.text_input(
-                "Nome do seu Produto:",
-                placeholder="Ex: Brigadeiro Gourmet Tradicional, Bolo no Pote de Ninho...",
-                value=st.session_state.nome_produto,
-                key="fin_nome_prod"
-            )
+            if st.button("Próximo Passo: Dizer quantas unidades rende ➡️", type="primary", use_container_width=True, key="btn_go_step_2"):
+                st.session_state.wizard_step = 2
+                st.rerun()
 
-            yield_mode_options = [
-                "Por Unidades Prontas (ex: 25 brigadeiros)",
-                "Por Peso Total em Gramas (g/ml)"
-            ]
-            curr_ym_idx = 0 if st.session_state.yield_mode.startswith("Por Unidades") else 1
-            yield_mode_sel = st.radio(
-                "Como você conta o rendimento desta receita?",
-                options=yield_mode_options,
-                index=curr_ym_idx,
-                horizontal=True,
-                key="fin_yield_mode_radio"
-            )
-            st.session_state.yield_mode = yield_mode_sel
+    # ==========================================================================
+    # PASSO 2: RENDIMENTO E EMBALAGEM (SIMPLES E DIRETO)
+    # ==========================================================================
+    elif step_cur == 2:
+        st.markdown("### 📦 Passo 2 de 3: Quantas unidades sua receita rende?")
+        st.caption("Responda apenas essas 3 perguntinhas rápidas sobre sua receita pronta:")
 
-            soma_pesos_brutos = max(1.0, sum(float(i["w"]) for i in st.session_state.recipe))
+        nome_produto = st.text_input(
+            "1. Qual o nome da sua receita?",
+            placeholder="Ex: Brigadeiro Caseiro, Bolo de Cenoura, Pão Caseiro...",
+            value=st.session_state.nome_produto,
+            key="wiz_nome_prod"
+        )
 
-            if yield_mode_sel.startswith("Por Unidades"):
-                col_u1, col_u2, col_u3 = st.columns(3)
-                default_units = max(1, int(round(st.session_state.weight_final / st.session_state.peso_embalagem))) if st.session_state.peso_embalagem > 0 else int(max(1, st.session_state.yield_units))
-                yield_units_val = col_u1.number_input(
-                    "Rende quantas unidades?",
-                    min_value=1,
-                    value=default_units,
-                    step=1,
-                    key="fin_yield_units_input",
-                    help="Quantos doces, potes, fatias ou pacotes prontos essa receita rende."
-                )
-                default_unit_w = st.session_state.peso_embalagem if st.session_state.peso_embalagem > 0 else round(soma_pesos_brutos / yield_units_val, 1)
-                peso_embalagem = col_u2.number_input(
-                    "Peso de cada unidade (g/ml):",
-                    min_value=1.0,
-                    value=float(max(1.0, default_unit_w)),
-                    step=5.0,
-                    key="fin_p_emb_unit_mode",
-                    help="Peso aproximado de 1 unidade pronta (usado na Tabela Nutricional)."
-                )
-                custo_embalagem = col_u3.number_input(
-                    "Custo Embalagem por un. (R$):",
-                    min_value=0.0,
-                    value=float(st.session_state.custo_embalagem),
-                    step=0.10,
-                    key="fin_c_emb_unit_mode",
-                    help="Forminha, pote, tampa, colherzinha, fita e etiqueta de 1 unidade."
-                )
-                weight_final = float(yield_units_val * peso_embalagem)
-                st.session_state.yield_units = int(yield_units_val)
-            else:
-                col_pkg1, col_pkg2, col_pkg3 = st.columns(3)
-                weight_final = col_pkg1.number_input(
-                    "Peso Total da Receita Pronta (g/ml):",
-                    min_value=1.0,
-                    value=float(max(st.session_state.weight_final, 1.0)),
-                    key="fin_w_final",
-                    help="Peso total do lote depois de pronto/cozido."
-                )
-                peso_embalagem = col_pkg2.number_input(
-                    "Peso de cada Unidade Vendida (g/ml):",
-                    min_value=0.0,
-                    value=float(st.session_state.peso_embalagem),
-                    key="fin_p_emb",
-                    help="Peso líquido de cada unidade comercializada."
-                )
-                custo_embalagem = col_pkg3.number_input(
-                    "Custo Embalagem por un. (R$):",
-                    min_value=0.0,
-                    value=float(st.session_state.custo_embalagem),
-                    step=0.10,
-                    key="fin_c_emb",
-                    help="Pote, tampa, caixa, rótulo por unidade."
-                )
+        soma_pesos_brutos = max(1.0, sum(float(i["w"]) for i in st.session_state.recipe))
+        default_units = max(1, int(round(st.session_state.weight_final / st.session_state.peso_embalagem))) if st.session_state.peso_embalagem > 0 else int(max(1, st.session_state.yield_units))
 
-            col_op1, col_op2, col_op3 = st.columns(3)
-            tempo_preparo_min = col_op1.number_input(
-                "Seu Tempo de Preparo (min):",
+        col_q1, col_q2 = st.columns(2)
+        yield_units_val = col_q1.number_input(
+            "2. Quantas unidades (ou porções) essa receita rende?",
+            min_value=1,
+            value=default_units,
+            step=1,
+            key="wiz_yield_units",
+            help="Ex: Se a receita dá 25 brigadeiros, digite 25. Se dá 6 potes de bolo, digite 6. Se você vende o bolo inteiro de uma vez, digite 1."
+        )
+        custo_embalagem = col_q2.number_input(
+            "3. Quanto gasta de embalagem em CADA unidade? (R$)",
+            min_value=0.0,
+            value=float(st.session_state.custo_embalagem),
+            step=0.10,
+            key="wiz_custo_emb",
+            help="Preço de 1 forminha, 1 saquinho ou 1 pote com tampa. Se não usar embalagem, deixe 0,00."
+        )
+
+        st.markdown("#### 💰 Quanto você quer ganhar de lucro livre?")
+        opcoes_lucro = {
+            "😊 Preço Mais Barato (20% de lucro livre — bom para vender rápido)": 20.0,
+            "🎯 Preço Ideal Caseiro (30% de lucro livre — Recomendado)": 30.0,
+            "✨ Preço Especial / Gourmet (45% de lucro livre — embalagens de presente)": 45.0,
+        }
+        margem_atual = float(st.session_state.margem_desejada_pct)
+        idx_lucro = 0 if margem_atual <= 22 else (2 if margem_atual >= 40 else 1)
+        escolha_lucro = st.radio(
+            "Escolha sua faixa de ganho:",
+            options=list(opcoes_lucro.keys()),
+            index=idx_lucro,
+            key="wiz_lucro_radio"
+        )
+        margem_desejada_pct = opcoes_lucro[escolha_lucro]
+
+        # Garantir valores padrão justos para quem faz em casa caso estejam zerados
+        if st.session_state.tempo_preparo_min <= 0:
+            st.session_state.tempo_preparo_min = 40.0
+        if st.session_state.custo_hora_mao_obra <= 0:
+            st.session_state.custo_hora_mao_obra = 15.0
+        if st.session_state.custo_operacional_pct <= 0:
+            st.session_state.custo_operacional_pct = 10.0
+
+        st.caption("✅ *Já incluímos automaticamente uma reserva para pagar seu gás, luz e seu tempo na cozinha!*")
+
+        with st.expander("⚙️ Quero ajustar meu tempo na cozinha, gás ou taxa de cartão/iFood (Opcional)"):
+            c_adv1, c_adv2 = st.columns(2)
+            tempo_preparo_min = c_adv1.number_input(
+                "Tempo que você leva para fazer a receita (minutos):",
                 min_value=0.0,
                 value=float(st.session_state.tempo_preparo_min),
-                step=5.0,
-                key="fin_t_prep",
-                help="Quantos minutos você gasta preparando, enrolando e embalando este lote."
+                step=10.0,
+                key="wiz_t_prep"
             )
-            custo_hora_mao_obra = col_op2.number_input(
-                "Valor da sua Hora (R$/h):",
+            custo_hora_mao_obra = c_adv2.number_input(
+                "Quanto vale 1 hora do seu trabalho? (R$/hora):",
                 min_value=0.0,
                 value=float(st.session_state.custo_hora_mao_obra),
                 step=2.0,
-                key="fin_c_hora",
-                help="Quanto vale 1 hora do seu trabalho na cozinha. Use a calculadora abaixo se não souber!"
+                key="wiz_c_hora",
+                help="Dica: R$ 15/h equivale a um salário de ~R$ 2.500/mês."
             )
-            custo_operacional_pct = col_op3.number_input(
-                "Contas Fixas: Gás, Luz, MEI (%):",
+            c_adv3, c_adv4 = st.columns(2)
+            custo_operacional_pct = c_adv3.number_input(
+                "Reserva para Gás, Luz e Água (%):",
                 min_value=0.0,
                 value=float(st.session_state.custo_operacional_pct),
-                step=1.0,
-                key="fin_c_op",
-                help="Percentual para cobrir gás de cozinha, energia elétrica, água, detergente e DAS do MEI (costuma ficar entre 8% e 15%)."
+                step=2.0,
+                key="wiz_c_op",
+                help="Para receitas feitas em casa, 10% cobre bem o gás e a energia elétrica."
             )
-
-            # --- ASSISTENTES DE CÁLCULO (MÃO DE OBRA & CONTAS FIXAS) ---
-            col_help1, col_help2 = st.columns(2)
-            with col_help1:
-                with st.expander("🧮 Não sabe quanto vale sua hora? Calcule aqui"):
-                    sal_desejado = st.number_input("Quanto quer tirar de salário no mês? (R$):", min_value=100.0, value=2500.0, step=100.0, key="calc_sal_mes")
-                    horas_dia = st.number_input("Quantas horas trabalha por dia?", min_value=1.0, max_value=16.0, value=6.0, step=1.0, key="calc_h_dia")
-                    dias_sem = st.number_input("Quantos dias por semana?", min_value=1.0, max_value=7.0, value=5.0, step=1.0, key="calc_d_sem")
-                    res_hora = calculate_hourly_labor_rate(sal_desejado, horas_dia, dias_sem)
-                    st.info(f"👩‍🍳 Trabalhando ~**{res_hora['monthly_hours']:.0f}h/mês**, sua hora vale **R$ {res_hora['hourly_rate']:.2f}/h**.")
-                    if st.button(f"✅ Usar R$ {res_hora['hourly_rate']:.2f}/h na receita", key="btn_apply_hora", use_container_width=True):
-                        st.session_state.custo_hora_mao_obra = res_hora["hourly_rate"]
-                        st.session_state.fin_c_hora = res_hora["hourly_rate"]
-                        st.toast(f"Valor da hora atualizado para R$ {res_hora['hourly_rate']:.2f}/h!")
-                        st.rerun()
-
-            with col_help2:
-                with st.expander("🔥 Ajuda para calcular Gás, Luz e Contas Fixas (%)"):
-                    g_gas = st.number_input("Gás de cozinha no mês (R$):", min_value=0.0, value=120.0, step=10.0, key="calc_f_gas")
-                    g_luz = st.number_input("Luz + Água da produção (R$):", min_value=0.0, value=150.0, step=10.0, key="calc_f_luz")
-                    g_mei = st.number_input("DAS MEI + Internet/Outros (R$):", min_value=0.0, value=80.0, step=10.0, key="calc_f_mei")
-                    g_fat = st.number_input("Quanto você vende por mês em média? (R$):", min_value=100.0, value=3000.0, step=200.0, key="calc_f_fat")
-                    soma_fixos = g_gas + g_luz + g_mei
-                    pct_sugerido = calculate_overhead_rate_pct(soma_fixos, g_fat)
-                    st.info(f"💡 Suas contas somam **R$ {soma_fixos:.2f}/mês**, o que representa **{pct_sugerido:.1f}%** das vendas.")
-                    if st.button(f"✅ Usar {pct_sugerido:.1f}% na receita", key="btn_apply_ov", use_container_width=True):
-                        st.session_state.custo_operacional_pct = pct_sugerido
-                        st.session_state.fin_c_op = pct_sugerido
-                        st.toast(f"Contas fixas atualizadas para {pct_sugerido:.1f}%!")
-                        st.rerun()
-
-            st.markdown("---")
-            st.markdown("### 🏷️ 3. Canal de Venda, Taxas & Margem de Lucro")
-
-            presets_canal = {
-                " Personalizado (digitar taxa abaixo)": None,
-                "💵 PIX ou Dinheiro Direto (0% de taxa)": 0.0,
-                "💳 Cartão de Crédito na Maquininha (~4,5%)": 4.5,
-                "🛵 iFood Plano Básico (~15,2% c/ pagamento online)": 15.2,
-                "🚀 iFood Plano Entrega Parceira (~26,2%)": 26.2,
-            }
-            canal_escolhido = st.selectbox(
-                "Onde você vai vender este produto? (Atalho de taxas):",
-                options=list(presets_canal.keys()),
-                key="fin_canal_preset_sel",
-                help="Escolha um canal para preencher a taxa automaticamente ou deixe em Personalizado."
-            )
-            if presets_canal[canal_escolhido] is not None:
-                st.session_state.taxas_venda_pct = float(presets_canal[canal_escolhido])
-
-            col_sim1, col_sim2, col_sim3 = st.columns(3)
-            margem_desejada_pct = col_sim1.number_input(
-                "Lucro Livre Desejado (%):",
-                min_value=1.0, max_value=80.0,
-                value=float(st.session_state.margem_desejada_pct),
-                step=5.0,
-                key="fin_m_desejada",
-                help="Quanto do preço final você quer que sobre livre para crescer o negócio (recomendado em confeitaria: 25% a 45%)."
-            )
-            taxas_venda_pct = col_sim2.number_input(
-                "Taxa de Maquininha / iFood (%):",
-                min_value=0.0, max_value=50.0,
-                value=float(st.session_state.taxas_venda_pct),
-                step=0.5,
-                key="fin_tx_venda",
-                help="Desconto da maquininha de cartão, comissão do iFood ou imposto."
-            )
-            preco_venda_praticado = col_sim3.number_input(
-                "Testar Meu Preço Atual (R$):",
+            taxas_venda_pct = c_adv4.number_input(
+                "Taxa de Cartão ou iFood (%):",
                 min_value=0.0,
-                value=float(st.session_state.preco_venda_praticado),
-                step=0.50,
-                key="fin_p_praticado",
-                help="Digite por quanto você vende hoje para ver se está lucrando! Deixe 0 para usar o Preço Ideal Sugerido."
+                max_value=50.0,
+                value=float(st.session_state.taxas_venda_pct),
+                step=1.0,
+                key="wiz_tx_venda",
+                help="Se vender no PIX ou dinheiro, deixe 0%. Para cartão de crédito, use ~4,5%. Para iFood, use 15% a 27%."
+            )
+            peso_unit_estimado = round(soma_pesos_brutos / yield_units_val, 1)
+            peso_embalagem = st.number_input(
+                "Peso aproximado de 1 unidade pronta (g/ml — usado apenas se for gerar Rótulo ANVISA):",
+                min_value=1.0,
+                value=float(st.session_state.peso_embalagem if st.session_state.peso_embalagem > 0 else max(1.0, peso_unit_estimado)),
+                step=5.0,
+                key="wiz_p_emb"
             )
 
-            # Atualizar session state
-            st.session_state.nome_produto = nome_produto
-            st.session_state.weight_final = weight_final
-            st.session_state.peso_embalagem = peso_embalagem
-            st.session_state.custo_embalagem = custo_embalagem
-            st.session_state.tempo_preparo_min = tempo_preparo_min
-            st.session_state.custo_hora_mao_obra = custo_hora_mao_obra
-            st.session_state.custo_operacional_pct = custo_operacional_pct
-            st.session_state.taxas_venda_pct = taxas_venda_pct
-            st.session_state.margem_desejada_pct = margem_desejada_pct
-            st.session_state.preco_venda_praticado = preco_venda_praticado
-            st.session_state.calculated = True
+        # Salvar escolhas no estado da sessão
+        st.session_state.nome_produto = nome_produto
+        st.session_state.yield_units = int(yield_units_val)
+        st.session_state.peso_embalagem = float(peso_embalagem)
+        st.session_state.weight_final = float(yield_units_val * peso_embalagem)
+        st.session_state.custo_embalagem = float(custo_embalagem)
+        st.session_state.tempo_preparo_min = float(tempo_preparo_min)
+        st.session_state.custo_hora_mao_obra = float(custo_hora_mao_obra)
+        st.session_state.custo_operacional_pct = float(custo_operacional_pct)
+        st.session_state.taxas_venda_pct = float(taxas_venda_pct)
+        st.session_state.margem_desejada_pct = float(margem_desejada_pct)
+        st.session_state.calculated = True
 
+        st.markdown("---")
+        b_nav1, b_nav2 = st.columns([1.0, 1.5])
+        if b_nav1.button("⬅️ Voltar aos Ingredientes", type="secondary", use_container_width=True):
+            st.session_state.wizard_step = 1
+            st.rerun()
+        if b_nav2.button("Ver Meu Preço de Venda (Passo 3) ➡️", type="primary", use_container_width=True):
+            st.session_state.wizard_step = 3
+            st.rerun()
+
+    # ==========================================================================
+    # PASSO 3: RESULTADO SIMPLES E DIRETO (POR QUANTO VENDER E QUANTO LUCRA)
+    # ==========================================================================
+    elif step_cur == 3:
+        if len(st.session_state.recipe) == 0:
+            st.info("Comece adicionando os ingredientes da sua receita no **Passo 1**!")
+            if st.button("Ir para o Passo 1", type="primary"):
+                st.session_state.wizard_step = 1
+                st.rerun()
         else:
-            st.info("👆 Escolha uma **Receita Modelo** no topo ou adicione seu primeiro ingrediente acima para ver o cálculo completo.")
-
-    with col_label:
-        if len(st.session_state.recipe) > 0:
             ref_unit_w = st.session_state.peso_embalagem if st.session_state.peso_embalagem > 0 else st.session_state.weight_final
-            num_units = max(1.0, st.session_state.weight_final / ref_unit_w) if ref_unit_w > 0 else 1.0
+            num_units = max(1.0, st.session_state.weight_final / ref_unit_w) if ref_unit_w > 0 else float(max(1, st.session_state.yield_units))
 
             fb = calculate_financial_breakdown(
                 recipe_ingredients=st.session_state.recipe,
@@ -1300,207 +1208,118 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 practiced_price=st.session_state.preco_venda_praticado
             )
 
-            st.markdown("### 📊 Resultado & Faixas de Preço")
-            st.caption(f"Rendimento considerado: **{num_units:.0f} unidade(s)** de **{ref_unit_w:.0f}g** cada.")
+            nome_exibicao = st.session_state.nome_produto.strip() or "Sua Receita Caseira"
+            st.markdown(f"### 🎉 Passo 3 de 3: Resultado de **{html.escape(nome_exibicao)}**")
+            st.caption(f"Sua receita rende **{num_units:.0f} unidades** (~{ref_unit_w:.0f}g cada). Veja quanto custou e por quanto vender:")
 
-            # --- 3 FAIXAS DE PREÇO (COMBATE O MEDO DE COBRAR) ---
+            # --- BLOCO 1: QUANTO VOCÊ GASTOU PARA FAZER ---
+            gasto_direto_lote = fb["total_cmv"] + fb["total_packaging"]
+            gasto_trabalho_gas_lote = fb["total_labor"] + fb["total_overhead"]
+            st.markdown(f"""
+            <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:14px; padding:16px 20px; margin-bottom:18px;">
+                <h4 style="margin:0 0 8px 0; color:#0b3b4c;">🧾 1. Quanto custa fazer esta receita?</h4>
+                <p style="margin:0 0 6px 0; font-size:0.96rem; color:#334155;">
+                    • 🛒 <strong>Ingredientes + Embalagens no mercado:</strong> R$ {gasto_direto_lote:.2f} na receita toda (<strong>R$ {(fb['unit_cmv'] + fb['unit_packaging']):.2f}</strong> por unidade)<br>
+                    • 👩‍🍳 <strong>Seu Tempo ({st.session_state.tempo_preparo_min:.0f} min) + Gás e Luz:</strong> R$ {gasto_trabalho_gas_lote:.2f} na receita toda (<strong>R$ {(fb['unit_labor'] + fb['unit_overhead']):.2f}</strong> por unidade)
+                </p>
+                <div style="background:#fffbeb; border-left:4px solid #f59e0b; padding:8px 12px; border-radius:6px; margin-top:8px; font-size:1.0rem; color:#92400e;">
+                    👉 <strong>Custo Completo de Produção:</strong> <strong>R$ {fb['unit_total_cost']:.2f} por unidade</strong> (ou <strong>R$ {fb['total_production_cost']:.2f}</strong> para fazer a receita toda).
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # --- BLOCO 2: POR QUANTO VENDER CADA UNIDADE (3 OPÇÕES CLARAS) ---
+            st.markdown("#### 🏷️ 2. Por quanto vender CADA unidade?")
             t_c1, t_c2, t_c3 = st.columns(3)
             with t_c1:
                 st.markdown(f"""
                 <div class="tier-card min-tier">
                     <div class="tier-title">🛡️ Preço Mínimo</div>
                     <div class="tier-price">R$ {fb['min_unit_price']:.2f}</div>
-                    <div class="tier-desc">Empate (Zero prejuízo)</div>
+                    <div class="tier-desc">Só paga os gastos (Lucro R$ 0). Não venda por menos que isso!</div>
                 </div>
                 """, unsafe_allow_html=True)
             with t_c2:
+                lucro_lote_ideal = fb["sug_net_profit"] * num_units
                 st.markdown(f"""
                 <div class="tier-card ideal-tier">
-                    <div class="tier-title">🎯 Preço Ideal</div>
+                    <div class="tier-title">🎯 Preço Recomendado</div>
                     <div class="tier-price">R$ {fb['suggested_unit_price']:.2f}</div>
-                    <div class="tier-desc">Lucro de {st.session_state.margem_desejada_pct:.0f}% (R$ {fb['sug_net_profit']:.2f}/un)</div>
+                    <div class="tier-desc">Você ganha <strong>R$ {fb['sug_net_profit']:.2f} livres/un</strong><br>(<strong>R$ {lucro_lote_ideal:.2f} livres</strong> na receita toda!)</div>
                 </div>
                 """, unsafe_allow_html=True)
             with t_c3:
                 st.markdown(f"""
                 <div class="tier-card prem-tier">
-                    <div class="tier-title">✨ Preço Gourmet</div>
+                    <div class="tier-title">✨ Preço Especial</div>
                     <div class="tier-price">R$ {fb['premium_unit_price']:.2f}</div>
-                    <div class="tier-desc">Linha presente / especial</div>
+                    <div class="tier-desc">Para embalagens de presente ou clientes especiais</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-            # Diagnóstico claro do preço praticado
-            if st.session_state.preco_venda_praticado > 0:
-                diff_ideal = st.session_state.preco_venda_praticado - fb["suggested_unit_price"]
-                if fb["prac_net_profit"] <= 0:
-                    st.error(
-                        f"🚨 **Cuidado! Prejuízo detectado:** Cobrando **R$ {st.session_state.preco_venda_praticado:.2f}**, "
-                        f"você perde **R$ {abs(fb['prac_net_profit']):.2f}** em cada unidade vendida. "
-                        f"O mínimo para não pagar para trabalhar é **R$ {fb['min_unit_price']:.2f}**."
-                    )
-                elif diff_ideal < -0.05:
-                    st.warning(
-                        f"⚠️ **Atenção à margem:** Vendendo a **R$ {st.session_state.preco_venda_praticado:.2f}**, "
-                        f"sobram **R$ {fb['prac_net_profit']:.2f}/un ({fb['prac_net_margin_pct']:.1f}%)**, "
-                        f"mas você está cobrando **R$ {abs(diff_ideal):.2f} a menos** que o preço ideal para sua meta."
-                    )
-                else:
-                    st.success(
-                        f"✅ **Preço Saudável!** Vendendo a **R$ {st.session_state.preco_venda_praticado:.2f}**, "
-                        f"você paga todos os seus custos (incluindo sua hora e gás/luz) e lucra **R$ {fb['prac_net_profit']:.2f} livres por unidade ({fb['prac_net_margin_pct']:.1f}%)**!"
-                    )
+            # --- BLOCO 3: TESTAR UM PREÇO SEU ---
+            st.markdown("#### 🧮 3. Quer testar um preço específico?")
+            preco_teste = st.number_input(
+                "Digite aqui por quanto você pensa em vender CADA unidade (R$) — ou deixe 0 para usar o Preço Recomendado:",
+                min_value=0.0,
+                value=float(st.session_state.preco_venda_praticado),
+                step=0.50,
+                key="wiz_preco_teste"
+            )
+            if preco_teste != st.session_state.preco_venda_praticado:
+                st.session_state.preco_venda_praticado = preco_teste
+                st.rerun()
 
-            m_col1, m_col2 = st.columns(2)
-            with m_col1:
-                st.markdown(f"""
-                <div class="metric-card-fin primary">
-                    <div class="fin-label">Ingredientes / Unidade</div>
-                    <div class="fin-val">R$ {fb['unit_cmv']:.2f}</div>
-                    <div class="fin-sub">Receita toda: R$ {fb['total_cmv']:.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with m_col2:
-                st.markdown(f"""
-                <div class="metric-card-fin warning">
-                    <div class="fin-label">Custo Completo / Unidade</div>
-                    <div class="fin-val">R$ {fb['unit_total_cost']:.2f}</div>
-                    <div class="fin-sub">Lote todo: R$ {fb['total_production_cost']:.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            m_col3, m_col4 = st.columns(2)
-            with m_col3:
-                st.markdown(f"""
-                <div class="metric-card-fin success">
-                    <div class="fin-label">Venda do Lote ({num_units:.0f} un)</div>
-                    <div class="fin-val">R$ {fb['prac_unit_price'] * num_units:.2f}</div>
-                    <div class="fin-sub">A R$ {fb['prac_unit_price']:.2f} cada unidade</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with m_col4:
-                lucro_color = "success" if fb['prac_net_profit'] > 0 else "danger"
-                st.markdown(f"""
-                <div class="metric-card-fin {lucro_color}">
-                    <div class="fin-label">Lucro Livre no Bolso</div>
-                    <div class="fin-val">R$ {fb['prac_net_profit']:.2f}/un</div>
-                    <div class="fin-sub">Lote todo: R$ {fb['prac_net_profit'] * num_units:.2f} ({fb['prac_net_margin_pct']:.1f}%)</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            st.markdown("---")
-            st.markdown(f"##### 🍰 Para onde vai cada centavo de R$ {fb['prac_unit_price']:.2f}?")
-
-            bd = fb["breakdown_pct"]
-            st.markdown(f"""
-            - 🛒 **Ingredientes (Matéria-prima):** {bd['cmv']}% (`R$ {fb['unit_cmv']:.2f}`)
-            - 📦 **Embalagem (Pote, forminha, fita):** {bd['packaging']}% (`R$ {fb['unit_packaging']:.2f}`)
-            - 👩‍🍳 **Seu Trabalho ({st.session_state.tempo_preparo_min:.0f} min no lote):** {bd['labor']}% (`R$ {fb['unit_labor']:.2f}`)
-            - 🔥 **Contas Fixas (Gás, luz, água, MEI):** {bd['overhead']}% (`R$ {fb['unit_overhead']:.2f}`)
-            - 💳 **Taxas de Venda (Maquininha / iFood):** {bd['fees']}% (`R$ {fb['prac_sales_fee_val']:.2f}`)
-            - 💰 **Seu Lucro Livre:** **{bd['profit']}%** (`R$ {fb['prac_net_profit']:.2f}`)
-            """, unsafe_allow_html=True)
+            lucro_total_receita = fb["prac_net_profit"] * num_units
+            venda_total_receita = fb["prac_unit_price"] * num_units
+            if fb["prac_net_profit"] <= 0:
+                st.error(
+                    f"🚨 **Atenção! Vendendo a R$ {fb['prac_unit_price']:.2f}, você terá PREJUÍZO de R$ {abs(fb['prac_net_profit']):.2f} por unidade!** "
+                    f"Venda por pelo menos **R$ {fb['min_unit_price']:.2f}** para cobrir seus gastos."
+                )
+            else:
+                st.success(
+                    f"✅ **Resumo vendendo a R$ {fb['prac_unit_price']:.2f} cada unidade:**\n\n"
+                    f"- 💰 Você recebe **R$ {venda_total_receita:.2f}** ao vender as **{num_units:.0f} unidades**.\n"
+                    f"- 🛒 Separe **R$ {fb['total_production_cost']:.2f}** para repor os ingredientes, embalagens, gás e seu tempo.\n"
+                    f"- 🎉 **Sobram R$ {lucro_total_receita:.2f} de LUCRO LIVRE no seu bolso** (**R$ {fb['prac_net_profit']:.2f}** livres em cada unidade)!"
+                )
 
             st.markdown("---")
 
-            # --- SIMULADORES DE DECISÃO DA CONFEITEIRA (FASE 2) ---
-            with st.expander("🎯 Meta do Mês: Quantas unidades preciso vender para tirar meu salário?", expanded=False):
-                meta_lucro_mes = st.number_input(
-                    "Quanto você quer colocar de LUCRO LIVRE no bolso com este produto no mês? (R$):",
-                    min_value=100.0,
-                    value=2000.0,
-                    step=100.0,
-                    key="sim_meta_lucro_mes"
-                )
-                dias_trab_mes = st.slider(
-                    "Dias de venda no mês:",
-                    min_value=4, max_value=30, value=24, step=1,
-                    key="sim_dias_trab_mes"
-                )
-                goal_res = calculate_monthly_sales_goal(
-                    monthly_profit_goal=meta_lucro_mes,
-                    unit_net_profit=fb["prac_net_profit"],
-                    unit_price=fb["prac_unit_price"],
-                    batch_units=num_units,
-                    working_days_per_month=dias_trab_mes
-                )
-                if not goal_res["achievable"]:
-                    st.error("⚠️ Com o preço atual, o lucro unitário está zerado ou negativo. Aumente o preço de venda acima para simular sua meta mensal!")
-                else:
-                    st.success(
-                        f"🚀 Para colocar **R$ {meta_lucro_mes:.2f} livres no bolso**, você precisa vender:\n\n"
-                        f"- **{goal_res['units_per_month']} unidades no mês** (~**{goal_res['units_per_day']} unidades por dia**)\n"
-                        f"- Isso equivale a produzir **{goal_res['batches_per_month']} receitas (fornadas)** no mês\n"
-                        f"- Faturamento bruto total: **R$ {goal_res['gross_revenue']:.2f}/mês**"
-                    )
-
-            with st.expander("🤝 Encomenda de Festa / Atacado: Posso dar desconto sem ter prejuízo?", expanded=False):
-                c_bk1, c_bk2 = st.columns(2)
-                qtd_encomenda = c_bk1.number_input("Qtd. da encomenda (un.):", min_value=5, value=50, step=5, key="sim_bulk_qty")
-                desc_encomenda = c_bk2.slider("Desconto para o cliente (%):", min_value=0, max_value=40, value=10, step=2, key="sim_bulk_disc")
-                bulk_res = calculate_bulk_discount_simulation(
-                    unit_total_cost=fb["unit_total_cost"],
-                    sales_fees_pct=st.session_state.taxas_venda_pct,
-                    base_unit_price=fb["prac_unit_price"],
-                    discount_pct=desc_encomenda,
-                    order_qty=qtd_encomenda
-                )
-                if bulk_res["is_profitable"]:
-                    st.info(
-                        f"✅ **Encomenda de {qtd_encomenda} un. com {desc_encomenda}% de desconto:**\n\n"
-                        f"- Novo preço por unidade: **R$ {bulk_res['discounted_unit_price']:.2f}** (de R$ {fb['prac_unit_price']:.2f})\n"
-                        f"- Valor total a cobrar do cliente: **R$ {bulk_res['total_order_revenue']:.2f}**\n"
-                        f"- **Seu Lucro Livre nesta encomenda:** **R$ {bulk_res['total_order_net_profit']:.2f}** (`R$ {bulk_res['unit_net_profit']:.2f}/un` · margem de `{bulk_res['margin_after_discount_pct']:.1f}%`)"
-                    )
-                else:
-                    st.error(
-                        f"🚨 **CUIDADO! Desconto de {desc_encomenda}% dá PREJUÍZO!**\n\n"
-                        f"- O preço cairia para **R$ {bulk_res['discounted_unit_price']:.2f}/un**, que é menor que seu custo + taxas (**R$ {fb[' min_unit_price' if ' min_unit_price' in fb else 'min_unit_price']:.2f}/un**).\n"
-                        f"- Prejuízo total no pedido: **R$ {bulk_res['total_order_net_profit']:.2f}**. Reduza o desconto!"
-                    )
-
-            st.markdown("---")
-
-            # --- EXPORTAÇÃO GRATUITA DE PDF DA FICHA TÉCNICA DE PRODUÇÃO & SALVAMENTO ---
+            # --- BOTÕES PRINCIPAIS DE AÇÃO (PDF GRÁTIS, SALVAR E EDITAR) ---
             ft_pdf_bytes = build_ficha_tecnica_pdf_bytes(
-                prod_name=st.session_state.nome_produto or "Minha Receita",
+                prod_name=nome_exibicao,
                 recipe_ingredients=st.session_state.recipe,
                 fb=fb,
                 num_units=num_units,
-                unit_weight_g=ref_weight,
+                unit_weight_g=ref_unit_w,
                 prep_time_min=st.session_state.tempo_preparo_min,
                 hourly_rate=st.session_state.custo_hora_mao_obra,
                 overhead_pct=st.session_state.custo_operacional_pct,
                 sales_fees_pct=st.session_state.taxas_venda_pct
             )
-            safe_ft_filename = "".join(c if c.isalnum() else "_" for c in (st.session_state.nome_produto or "ficha_tecnica")).strip("_").lower() or "ficha_tecnica"
+            safe_ft_filename = "".join(c if c.isalnum() else "_" for c in nome_exibicao).strip("_").lower() or "minha_receita"
 
-            st.download_button(
-                label="📄 Baixar PDF da Ficha Técnica (Cozinha & Custos — Grátis)",
-                data=ft_pdf_bytes,
-                file_name=f"ficha_tecnica_{safe_ft_filename}.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-                key="btn_dl_ficha_tecnica_pdf"
-            )
-
-            col_act1, col_act2 = st.columns(2)
-            with col_act1:
-                if st.button("💾 Salvar Ficha no Sistema", type="secondary", use_container_width=True):
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                st.download_button(
+                    label="📄 Baixar Receita e Preços em PDF (Grátis)",
+                    data=ft_pdf_bytes,
+                    file_name=f"ficha_tecnica_{safe_ft_filename}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_dl_ficha_tecnica_pdf"
+                )
+            with c_btn2:
+                if st.button("💾 Salvar Minha Receita no Aplicativo", type="secondary", use_container_width=True):
                     st.session_state.show_save_dialog = True
-            with col_act2:
-                if st.button("🏷️ Gerar Rótulo ANVISA", type="secondary", use_container_width=True):
-                    st.session_state.selected_page = "Tabela Nutricional & ANVISA"
-                    st.rerun()
 
             if st.session_state.get("show_save_dialog", False):
-                st.markdown("---")
                 plan_st = get_user_plan_status(st.session_state.username, db_lock)
-                st.markdown(f"##### 💾 Salvar na Minha Lista ({plan_st['plan_label']})")
-                name_save = st.text_input("Nome da Receita/Produto:", value=st.session_state.nome_produto, placeholder="Ex: Brigadeiro Gourmet Tradicional", key="save_fin_name")
+                st.markdown(f"##### 💾 Salvar Receita ({plan_st['plan_label']})")
+                name_save = st.text_input("Nome para salvar:", value=st.session_state.nome_produto, placeholder="Ex: Brigadeiro Caseiro", key="save_fin_name")
                 c_sv1, c_sv2 = st.columns(2)
                 if c_sv1.button("✅ Confirmar e Salvar", type="primary", use_container_width=True):
                     if name_save.strip():
@@ -1513,19 +1332,69 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                         else:
                             st.session_state.nome_produto = name_save.strip()
                             if save_recipe(name_save.strip(), db_lock):
-                                st.toast(f"Ficha Técnica '{name_save.strip()}' salva com sucesso!")
+                                st.toast(f"Receita '{name_save.strip()}' salva com sucesso!")
                                 st.session_state.show_save_dialog = False
                                 st.rerun()
                             else:
-                                st.error("Erro ao salvar ficha técnica no banco de dados.")
+                                st.error("Erro ao salvar receita.")
                     else:
                         st.error("Digite um nome para identificar sua receita.")
                 if c_sv2.button("Cancelar", type="secondary", use_container_width=True):
                     st.session_state.show_save_dialog = False
                     st.rerun()
-        else:
-            st.markdown("### 📊 Resultado & Faixas de Preço")
-            st.info("Assim que você escolher uma **Receita Modelo** acima ou adicionar seus ingredientes ao lado, você verá aqui:\n\n- 🛡️ **Preço Mínimo** (para nunca ter prejuízo)\n- 🎯 **Preço Ideal Sugerido** (com seu lucro)\n- ✨ **Preço Gourmet / Premium**\n- 👩‍🍳 Quanto custa seu tempo, embalagem e gás em cada unidade!")
+
+            c_back1, c_back2 = st.columns(2)
+            if c_back1.button("⬅️ Editar Ingredientes (Passo 1)", use_container_width=True):
+                st.session_state.wizard_step = 1
+                st.rerun()
+            if c_back2.button("⬅️ Editar Rendimento (Passo 2)", use_container_width=True):
+                st.session_state.wizard_step = 2
+                st.rerun()
+
+            st.markdown("---")
+            st.markdown("##### 🛠️ Ferramentas Extras (Opcional)")
+
+            with st.expander("🎯 Meta do Mês: Quantas unidades preciso vender para tirar uma renda mensal?"):
+                meta_lucro_mes = st.number_input(
+                    "Quanto você quer ganhar livre no mês com esta receita? (R$):",
+                    min_value=100.0, value=1500.0, step=100.0, key="sim_meta_lucro_mes"
+                )
+                dias_trab_mes = st.slider("Quantos dias por mês pretende vender?", min_value=4, max_value=30, value=20, step=1, key="sim_dias_trab_mes")
+                goal_res = calculate_monthly_sales_goal(
+                    monthly_profit_goal=meta_lucro_mes,
+                    unit_net_profit=fb["prac_net_profit"],
+                    unit_price=fb["prac_unit_price"],
+                    batch_units=num_units,
+                    working_days_per_month=dias_trab_mes
+                )
+                if goal_res["achievable"]:
+                    st.info(
+                        f"Para colocar **R$ {meta_lucro_mes:.2f} livres no bolso**, venda **{goal_res['units_per_month']} unidades no mês** "
+                        f"(cerca de **{goal_res['units_per_day']} unidades por dia**, ou **{goal_res['batches_per_month']} receitas completas** no mês)."
+                    )
+
+            with st.expander("🤝 Encomenda para Festa: Posso dar desconto sem ter prejuízo?"):
+                c_bk1, c_bk2 = st.columns(2)
+                qtd_encomenda = c_bk1.number_input("Quantidade da encomenda (un.):", min_value=5, value=50, step=5, key="sim_bulk_qty")
+                desc_encomenda = c_bk2.slider("Desconto pedido pelo cliente (%):", min_value=0, max_value=40, value=10, step=2, key="sim_bulk_disc")
+                bulk_res = calculate_bulk_discount_simulation(
+                    unit_total_cost=fb["unit_total_cost"],
+                    sales_fees_pct=st.session_state.taxas_venda_pct,
+                    base_unit_price=fb["prac_unit_price"],
+                    discount_pct=desc_encomenda,
+                    order_qty=qtd_encomenda
+                )
+                if bulk_res["is_profitable"]:
+                    st.info(
+                        f"✅ Com **{desc_encomenda}% de desconto**, cobre **R$ {bulk_res['discounted_unit_price']:.2f}/un** "
+                        f"(Total do pedido: **R$ {bulk_res['total_order_revenue']:.2f}**). "
+                        f"Você ainda lucra **R$ {bulk_res['total_order_net_profit']:.2f} livres** nesta encomenda!"
+                    )
+                else:
+                    st.error(
+                        f"🚨 **Não dê {desc_encomenda}% de desconto!** O preço cairia para R$ {bulk_res['discounted_unit_price']:.2f}/un e você teria **prejuízo de R$ {abs(bulk_res['total_order_net_profit']):.2f}**."
+                    )
+
 
 # ==============================================================================
 # TAB 2: TABELA NUTRICIONAL & ROTULAGEM ANVISA (PRODUTO SECUNDÁRIO)
@@ -2040,6 +1909,7 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
                 if st.session_state.peso_embalagem > 0:
                     st.session_state.yield_units = max(1, int(round(st.session_state.weight_final / st.session_state.peso_embalagem)))
                 st.session_state.calculated = True
+                st.session_state.wizard_step = 1 if as_copy else 3
                 st.session_state.selected_page = "Ficha Técnica & Precificação"
 
             st.markdown("---")
