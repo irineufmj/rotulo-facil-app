@@ -229,7 +229,55 @@ def save_users(users, db_lock):
     with db_lock:
         return safe_save_json(USERS_JSON_PATH, users)
 
+def consume_user_credit(username: str, db_lock) -> tuple:
+    """
+    Debita 1 crédito do usuário de forma atômica e segura (via SQL atômico ou arquivo JSON protegido por lock).
+    Retorna (sucesso: bool, mensagem: str).
+    """
+    from utils.db import is_sql_configured, consume_user_credit_sql, get_user_credits_cached
+    if is_sql_configured():
+        return consume_user_credit_sql(username, db_lock)
+
+    uname_clean = (username or "").strip().lower()
+    if not uname_clean:
+        return False, "Usuário não identificado."
+
+    with db_lock:
+        users = load_users(db_lock)
+        target_user = None
+        for u in users:
+            if u["username"].strip().lower() == uname_clean:
+                target_user = u
+                break
+
+        if not target_user:
+            return False, "Usuário não encontrado."
+
+        if target_user.get("is_admin", False):
+            return True, "Administrador (créditos ilimitados)."
+
+        current_credits = int(target_user.get("creditos_disponiveis", 0) or 0)
+        if current_credits <= 0:
+            return False, "Saldo insuficiente de créditos."
+
+        target_user["creditos_disponiveis"] = current_credits - 1
+        if safe_save_json(USERS_JSON_PATH, users):
+            try:
+                get_user_credits_cached.clear()
+            except Exception:
+                pass
+            return True, f"Crédito debitado com sucesso. Restantes: {target_user['creditos_disponiveis']}"
+        else:
+            target_user["creditos_disponiveis"] = current_credits
+            return False, "Erro ao gravar débito de crédito."
+
 def hash_password(password, salt=None):
+    if salt is None:
+        try:
+            import bcrypt
+            return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        except Exception:
+            pass
     if not salt:
         salt = os.urandom(32)
     else:
@@ -238,9 +286,18 @@ def hash_password(password, salt=None):
     return f"{salt.hex()}:{key.hex()}"
 
 def verify_password(stored_password, provided_password):
+    if not stored_password or not provided_password:
+        return False
+    if stored_password.startswith(("$2b$", "$2a$", "$2y$")):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(provided_password.encode('utf-8'), stored_password.encode('utf-8'))
+        except Exception as e:
+            logger.warning(f"Erro ao verificar senha bcrypt: {e}", exc_info=True)
+            return False
     if ":" not in stored_password:
         return False
-    salt, stored_hash = stored_password.split(':')
+    salt, stored_hash = stored_password.split(':', 1)
     if len(salt) == 32 and len(stored_hash) == 64:
         return stored_hash == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
     try:
@@ -251,13 +308,13 @@ def verify_password(stored_password, provided_password):
         logger.warning(f"Erro ao verificar senha: {e}", exc_info=True)
         return False
 
-def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
+def register_user(username, email, cpf="", password="", lgpd_accepted=False, db_lock=None):
     if not lgpd_accepted:
         return False, "Você precisa aceitar os termos da LGPD para se cadastrar."
     
-    username_clean = username.strip()
-    email_clean = email.strip()
-    cpf_digits = ''.join(filter(str.isdigit, cpf))
+    username_clean = (username or "").strip()
+    email_clean = (email or "").strip()
+    cpf_digits = ''.join(filter(str.isdigit, cpf or ""))
     
     if not username_clean:
         return False, "O nome de usuário não pode ser vazio."
@@ -265,22 +322,24 @@ def register_user(username, email, cpf, password, lgpd_accepted, db_lock):
     if not EMAIL_RE.match(email_clean):
         return False, "Por favor, informe um endereço de e-mail válido."
         
-    if not cpf_digits or not validate_cpf(cpf_digits):
-        return False, "Por favor, informe um CPF válido."
-    if len(password) < 8:
+    # CPF é opcional no cadastro rápido; se informado, validamos
+    if cpf_digits and not validate_cpf(cpf_digits):
+        return False, "Por favor, informe um CPF válido ou deixe em branco."
+    if len(password or "") < 8:
         return False, "A senha deve conter pelo menos 8 caracteres."
         
-    hashed_cpf = hash_cpf(cpf_digits)
+    hashed_cpf = hash_cpf(cpf_digits) if cpf_digits else ""
     users = load_users(db_lock)
     for u in users:
         if u["username"].lower() == username_clean.lower():
             return False, "Este nome de usuário já está em uso."
         if u.get("email", "").lower() == email_clean.lower():
             return False, "Este endereço de e-mail já está cadastrado."
-        db_cpf = u.get("cpf", "")
-        # Suporta verificação de duplicidade com CPF criptografado ou texto claro legado
-        if db_cpf == hashed_cpf or db_cpf == cpf_digits:
-            return False, "Este CPF já está cadastrado em outra conta."
+        if cpf_digits:
+            db_cpf = u.get("cpf", "")
+            # Suporta verificação de duplicidade com CPF criptografado ou texto claro legado
+            if db_cpf and (db_cpf == hashed_cpf or db_cpf == cpf_digits):
+                return False, "Este CPF já está cadastrado em outra conta."
             
     new_user = {
         "username": username_clean,
@@ -328,19 +387,17 @@ def authenticate_user(username, password, db_lock):
             if is_valid_pass:
                 st.session_state.login_attempts = 0
 
-                # Migração automática de hash legado (SHA-256 simples) para PBKDF2
-                # Detectado pelo salt de 16 hex chars (32 nibbles) e hash de 32 bytes (64 nibbles)
-                stored = u["password_hash"]
-                if ":" in stored:
-                    salt_part, hash_part = stored.split(":", 1)
-                    if len(salt_part) == 32 and len(hash_part) == 64:
-                        # Hash legado detectado — atualizar para PBKDF2 silenciosamente
-                        try:
-                            u["password_hash"] = hash_password(password)
+                # Migração automática transparente de hash legado (SHA-256 ou PBKDF2) para bcrypt
+                stored = u.get("password_hash", "")
+                if not stored.startswith(("$2b$", "$2a$", "$2y$")):
+                    try:
+                        new_hash = hash_password(password)
+                        if new_hash != stored:
+                            u["password_hash"] = new_hash
                             save_users(users, db_lock)
-                            logger.info(f"Hash de senha migrado para PBKDF2 para o usuário '{u['username']}'.")
-                        except Exception as mig_err:
-                            logger.warning(f"Falha na migração de hash: {mig_err}")
+                            logger.info(f"Hash de senha migrado automaticamente para bcrypt para o usuário '{u['username']}'.")
+                    except Exception as mig_err:
+                        logger.warning(f"Falha na migração de hash: {mig_err}")
 
                 return True, u["username"], u.get("is_admin", False)
             else:

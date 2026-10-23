@@ -285,6 +285,118 @@ def inject_custom_css():
         border-bottom-color: #00a88f !important;
         font-weight: bold !important;
     }
+
+    /* Hero Profit Banner (Mobile-First Top Summary) */
+    .hero-profit-banner {
+        background: linear-gradient(135deg, #0b3b4c 0%, #007d70 100%);
+        color: #ffffff;
+        border-radius: 14px;
+        padding: 16px 20px;
+        margin-bottom: 18px;
+        box-shadow: 0 6px 20px rgba(11, 59, 76, 0.14);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    .hero-profit-item {
+        flex: 1 1 130px;
+    }
+    .hero-profit-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: #a7f3d0;
+        font-weight: 700;
+        margin-bottom: 2px;
+    }
+    .hero-profit-val {
+        font-size: 1.4rem;
+        font-weight: 900;
+        color: #ffffff;
+        line-height: 1.2;
+    }
+    .hero-profit-sub {
+        font-size: 0.76rem;
+        color: #d1fae5;
+    }
+
+    /* 3 Pricing Tiers Cards */
+    .tier-card {
+        border-radius: 12px;
+        padding: 12px 14px;
+        border: 1px solid #e5e7eb;
+        background: #ffffff;
+        margin-bottom: 10px;
+        text-align: center;
+    }
+    .tier-card.min-tier {
+        border-top: 4px solid #f59e0b;
+        background: #fffbeb;
+    }
+    .tier-card.ideal-tier {
+        border-top: 4px solid #10b981;
+        background: #ecfdf5;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.12);
+    }
+    .tier-card.prem-tier {
+        border-top: 4px solid #6366f1;
+        background: #eef2ff;
+    }
+    .tier-title {
+        font-size: 0.72rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #4b5563;
+        margin-bottom: 4px;
+    }
+    .tier-price {
+        font-size: 1.35rem;
+        font-weight: 900;
+        color: #0b3b4c;
+        line-height: 1.2;
+    }
+    .tier-desc {
+        font-size: 0.75rem;
+        color: #6b7280;
+        margin-top: 3px;
+    }
+
+    /* Mobile-First & Touch Optimization (Confeiteira no Celular) */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+            padding-top: 1rem !important;
+        }
+        .main-title {
+            font-size: 1.7rem !important;
+        }
+        .subtitle {
+            font-size: 0.9rem !important;
+            margin-bottom: 1rem !important;
+        }
+        .stButton > button {
+            min-height: 44px !important;
+            font-size: 0.95rem !important;
+        }
+        /* Prevenir auto-zoom no iOS Safari e facilitar toque */
+        input[type="number"], input[type="text"], input[type="password"], select, textarea {
+            font-size: 16px !important;
+            min-height: 42px !important;
+        }
+        .fin-val {
+            font-size: 1.3rem !important;
+        }
+        .hero-profit-banner {
+            padding: 12px 14px !important;
+        }
+        .hero-profit-val {
+            font-size: 1.2rem !important;
+        }
+    }
 </style>
     """, unsafe_allow_html=True)
 

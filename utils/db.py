@@ -423,6 +423,66 @@ def add_user_credits_sql(target_identifier: str, credits_to_add: int, payment_id
             return False, f"Erro no banco de dados relacional ao adicionar créditos: {e}"
 
 
+def consume_user_credit_sql(username: str, db_lock) -> tuple:
+    """
+    Debita 1 crédito do usuário de forma atômica no banco SQL:
+    - Se o usuário for administrador, não desconta e retorna sucesso.
+    - Se for usuário comum, executa UPDATE condicional (creditos_disponiveis > 0) em uma única instrução,
+      impedindo saldo negativo ou débito duplicado em cliques concorrentes.
+    Retorna (sucesso: bool, mensagem: str).
+    """
+    engine = get_db_engine()
+    if not engine:
+        return False, "Engine SQL não disponível."
+
+    uname_clean = (username or "").strip()
+    if not uname_clean:
+        return False, "Usuário não identificado."
+
+    with db_lock:
+        try:
+            with engine.begin() as conn:
+                row = conn.execute(
+                    text("SELECT username, is_admin, creditos_disponiveis FROM usuarios WHERE LOWER(username) = LOWER(:uname) LIMIT 1"),
+                    {"uname": uname_clean}
+                ).fetchone()
+
+                if not row:
+                    return False, f"Usuário '{uname_clean}' não encontrado."
+
+                db_uname, is_admin_flag, current_credits = row[0], bool(row[1]), int(row[2] or 0)
+                if is_admin_flag:
+                    return True, "Administrador (créditos ilimitados)."
+
+                if current_credits <= 0:
+                    return False, "Saldo insuficiente de créditos."
+
+                upd = conn.execute(
+                    text("""
+                    UPDATE usuarios
+                    SET creditos_disponiveis = creditos_disponiveis - 1
+                    WHERE username = :uname AND creditos_disponiveis > 0
+                    """),
+                    {"uname": db_uname}
+                )
+                if upd.rowcount <= 0:
+                    return False, "Não foi possível debitar o crédito (saldo insuficiente)."
+
+                remaining = current_credits - 1
+
+            try:
+                if exists():
+                    get_user_credits_cached.clear()
+            except Exception:
+                pass
+
+            logger.info(f"Crédito debitado atomicamente via SQL para '{db_uname}'. Restantes: {remaining}")
+            return True, f"Crédito debitado com sucesso. Restantes: {remaining}"
+        except Exception as e:
+            logger.error(f"Erro ao debitar crédito via SQL para '{uname_clean}': {e}", exc_info=True)
+            return False, f"Erro ao debitar crédito no banco de dados: {e}"
+
+
 def load_recipes_sql(db_lock, username: str = "") -> list:
     """
     Carrega receitas do banco de dados relacional filtradas por username.

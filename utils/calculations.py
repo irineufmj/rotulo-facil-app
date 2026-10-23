@@ -104,6 +104,66 @@ def round_anvisa(value, nutrient_name):
 # ENGENHARIA FINANCEIRA DE ALIMENTOS & PRECIFICAÇÃO DE PRODUTOS
 # ==============================================================================
 
+def convert_package_to_cost_kg(package_price: float, package_qty: float, package_unit: str) -> float:
+    """
+    Converte o valor pago em uma embalagem (ex: R$ 7,90 por 395g, ou R$ 12,00 por 1 dúzia de ovos)
+    para o custo padronizado em R$/kg (ou R$/L).
+    """
+    price = max(0.0, float(package_price or 0.0))
+    qty = max(0.0, float(package_qty or 0.0))
+    if price <= 0.0 or qty <= 0.0:
+        return 0.0
+
+    unit_norm = (package_unit or "g").strip().lower()
+    if unit_norm in ("kg", "l", "litro", "litros", "quilo", "quilos"):
+        weight_kg = qty
+    elif unit_norm in ("g", "ml", "grama", "gramas", "mililitros"):
+        weight_kg = qty / 1000.0
+    elif unit_norm.startswith("un"):
+        # 1 unidade média (ex: ovo ~50g)
+        weight_kg = (qty * 50.0) / 1000.0
+    elif unit_norm.startswith(("dúz", "duz", "cartela 12")):
+        # 1 dúzia de ovos (~600g)
+        weight_kg = (qty * 600.0) / 1000.0
+    elif unit_norm.startswith("cartela 30"):
+        # 1 cartela de 30 ovos (~1500g)
+        weight_kg = (qty * 1500.0) / 1000.0
+    else:
+        weight_kg = qty / 1000.0
+
+    if weight_kg <= 0.0:
+        return 0.0
+    return round(price / weight_kg, 2)
+
+
+def calculate_hourly_labor_rate(desired_monthly_salary: float, hours_per_day: float, days_per_week: float) -> dict:
+    """
+    Calcula quanto vale a hora de trabalho da confeiteira/produtor a partir da meta de salário mensal,
+    horas trabalhadas por dia e dias por semana (considerando 4,33 semanas/mês).
+    """
+    salary = max(0.0, float(desired_monthly_salary or 0.0))
+    h_day = max(0.5, float(hours_per_day or 1.0))
+    d_week = max(1.0, float(days_per_week or 1.0))
+    monthly_hours = h_day * d_week * 4.33
+    hourly_rate = salary / monthly_hours if monthly_hours > 0 else 0.0
+    return {
+        "hourly_rate": round(hourly_rate, 2),
+        "monthly_hours": round(monthly_hours, 1),
+        "minute_rate": round(hourly_rate / 60.0, 2)
+    }
+
+
+def calculate_overhead_rate_pct(fixed_costs_total: float, monthly_revenue: float) -> float:
+    """
+    Calcula o percentual de rateio das contas fixas (gás, energia, água, MEI, internet)
+    sobre o faturamento mensal médio.
+    """
+    costs = max(0.0, float(fixed_costs_total or 0.0))
+    rev = max(1.0, float(monthly_revenue or 1.0))
+    pct = (costs / rev) * 100.0
+    return round(min(80.0, max(0.0, pct)), 1)
+
+
 def calculate_ingredient_cost(weight_g: float, cost_kg: float, yield_factor: float = 1.0) -> float:
     """
     Calcula o custo de um ingrediente considerando o peso (g), custo por kg (R$/kg)
@@ -189,6 +249,17 @@ def calculate_financial_breakdown(
         
     suggested_unit_price = unit_total_cost / divisor
     suggested_total_price = suggested_unit_price * n_units
+
+    # Faixa Mínima (Ponto de Empate / Zero Prejuízo: cobre todos os custos + taxas de venda)
+    min_divisor = max(0.05, 1.0 - s_fees)
+    min_unit_price = unit_total_cost / min_divisor
+    min_total_price = min_unit_price * n_units
+
+    # Faixa Premium / Gourmet (+15 pontos percentuais de margem, limitada com segurança)
+    prem_margin = min(0.80, t_margin + 0.15)
+    prem_divisor = max(0.05, 1.0 - (s_fees + prem_margin))
+    premium_unit_price = unit_total_cost / prem_divisor
+    premium_total_price = premium_unit_price * n_units
     
     # Métricas do Preço Sugerido
     sug_sales_fee_val = suggested_unit_price * s_fees
@@ -228,8 +299,12 @@ def calculate_financial_breakdown(
         "unit_overhead": round(unit_overhead, 2),
         "unit_total_cost": round(unit_total_cost, 2),
         "total_production_cost": round(total_production_cost, 2),
+        "min_unit_price": round(min_unit_price, 2),
+        "min_total_price": round(min_total_price, 2),
         "suggested_unit_price": round(suggested_unit_price, 2),
         "suggested_total_price": round(suggested_total_price, 2),
+        "premium_unit_price": round(premium_unit_price, 2),
+        "premium_total_price": round(premium_total_price, 2),
         "sug_sales_fee_val": round(sug_sales_fee_val, 2),
         "sug_net_profit": round(sug_net_profit, 2),
         "sug_net_margin_pct": round(sug_net_margin_pct, 1),
@@ -246,4 +321,81 @@ def calculate_financial_breakdown(
             "profit": round(profit_pct_val, 1)
         }
     }
+
+
+def calculate_monthly_sales_goal(
+    monthly_profit_goal: float,
+    unit_net_profit: float,
+    unit_price: float,
+    batch_units: float,
+    working_days_per_month: int = 25
+) -> dict:
+    """
+    Calcula quantas unidades e quantas receitas/fornadas a confeiteira precisa vender
+    no mês (e por dia trabalhado) para atingir uma meta de lucro líquido livre no bolso.
+    """
+    import math
+    goal = max(0.0, float(monthly_profit_goal or 0.0))
+    net_u = float(unit_net_profit or 0.0)
+    price_u = max(0.0, float(unit_price or 0.0))
+    b_units = max(1.0, float(batch_units or 1.0))
+    days = max(1, int(working_days_per_month or 25))
+
+    if net_u <= 0.0 or goal <= 0.0:
+        return {
+            "achievable": False,
+            "units_per_month": 0,
+            "units_per_day": 0,
+            "batches_per_month": 0.0,
+            "gross_revenue": 0.0
+        }
+
+    units_month = math.ceil(goal / net_u)
+    units_day = math.ceil(units_month / days)
+    batches_month = round(units_month / b_units, 1)
+    gross_rev = round(units_month * price_u, 2)
+
+    return {
+        "achievable": True,
+        "units_per_month": int(units_month),
+        "units_per_day": int(units_day),
+        "batches_per_month": batches_month,
+        "gross_revenue": gross_rev
+    }
+
+
+def calculate_bulk_discount_simulation(
+    unit_total_cost: float,
+    sales_fees_pct: float,
+    base_unit_price: float,
+    discount_pct: float,
+    order_qty: int
+) -> dict:
+    """
+    Simula o efeito de um desconto para encomenda grande (festa/eventos/revenda),
+    mostrando o novo preço unitário, o valor total do pedido e se o lucro continua positivo.
+    """
+    u_cost = max(0.0, float(unit_total_cost or 0.0))
+    s_fees = min(0.85, max(0.0, float(sales_fees_pct or 0.0))) / 100.0
+    base_p = max(0.0, float(base_unit_price or 0.0))
+    disc = min(80.0, max(0.0, float(discount_pct or 0.0))) / 100.0
+    qty = max(1, int(order_qty or 1))
+
+    disc_unit_price = round(base_p * (1.0 - disc), 2)
+    fee_val = disc_unit_price * s_fees
+    net_unit_profit = round(disc_unit_price - u_cost - fee_val, 2)
+    margin_pct = round((net_unit_profit / disc_unit_price * 100.0), 1) if disc_unit_price > 0 else 0.0
+
+    total_rev = round(disc_unit_price * qty, 2)
+    total_profit = round(net_unit_profit * qty, 2)
+
+    return {
+        "discounted_unit_price": disc_unit_price,
+        "unit_net_profit": net_unit_profit,
+        "margin_after_discount_pct": margin_pct,
+        "total_order_revenue": total_rev,
+        "total_order_net_profit": total_profit,
+        "is_profitable": net_unit_profit > 0.0
+    }
+
 

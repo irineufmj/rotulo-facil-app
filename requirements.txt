@@ -6,3 +6,4 @@ psycopg2-binary
 mercadopago
 fastapi
 uvicorn
+bcrypt

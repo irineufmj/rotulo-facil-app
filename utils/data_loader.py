@@ -159,6 +159,71 @@ def delete_recipe(name, db_lock):
         return safe_save_json(RECIPES_JSON_PATH, recipes)
 
 
+FREE_RECIPE_LIMIT = 3
+
+
+def get_user_plan_status(username: str, db_lock) -> dict:
+    """
+    Retorna o status do plano do usuário (Freemium até 3 fichas salvas vs. Pro Ilimitado).
+    Um usuário possui o Plano Pro (fichas ilimitadas) se:
+    - for administrador (is_admin = True)
+    - tiver realizado qualquer compra/assinatura (transacoes_processadas não vazia)
+    - tiver saldo >= 3 créditos liberados
+    """
+    from utils.auth import load_users
+    uname = (username or "").strip()
+    user_recipes = load_saved_recipes(db_lock, uname) if uname else []
+    saved_count = len(user_recipes)
+    existing_names = {r.get("nome", "").strip().lower() for r in user_recipes}
+
+    is_pro = False
+    try:
+        all_users = load_users(db_lock)
+        u_obj = next((u for u in all_users if u.get("username", "").lower() == uname.lower()), None)
+        if u_obj:
+            txs = u_obj.get("transacoes_processadas", []) or []
+            creds = int(u_obj.get("creditos_disponiveis", 0) or 0)
+            if u_obj.get("is_admin", False) or len(txs) > 0 or creds >= 3:
+                is_pro = True
+    except Exception as e:
+        logger.warning(f"Erro ao verificar plano do usuário '{uname}': {e}")
+
+    remaining_free = max(0, FREE_RECIPE_LIMIT - saved_count)
+    plan_label = "💎 Plano Pro (Fichas Ilimitadas)" if is_pro else f"🌱 Plano Grátis ({saved_count}/{FREE_RECIPE_LIMIT} fichas salvas)"
+
+    return {
+        "is_pro": is_pro,
+        "saved_count": saved_count,
+        "free_limit": FREE_RECIPE_LIMIT,
+        "remaining_free": remaining_free,
+        "existing_names": existing_names,
+        "plan_label": plan_label
+    }
+
+
+def can_user_save_recipe(username: str, recipe_name: str, db_lock) -> tuple:
+    """
+    Verifica se a usuária pode salvar a ficha técnica:
+    - Sempre permitido se for Pro/Assinante/Admin
+    - Sempre permitido se estiver atualizando uma das 3 fichas já salvas
+    - Permitido para novas fichas se tiver menos de 3 fichas salvas no Plano Grátis
+    """
+    status = get_user_plan_status(username, db_lock)
+    clean_name = (recipe_name or "").strip().lower()
+    if status["is_pro"]:
+        return True, ""
+    if clean_name in status["existing_names"]:
+        return True, ""
+    if status["saved_count"] < status["free_limit"]:
+        return True, ""
+    return (
+        False,
+        f"Você já utilizou suas {status['free_limit']} Fichas Técnicas do Plano Gratuito! "
+        "Para salvar fichas ilimitadas, ative o Plano Confeiteira Pro (R$ 19,90/mês) na aba 'Meu Perfil' "
+        "ou sobrescreva uma das suas fichas existentes."
+    )
+
+
 
 def get_recipes_as_ingredients(db_lock, username):
     from utils.data_loader import load_saved_recipes
@@ -198,3 +263,289 @@ def get_recipes_as_ingredients(db_lock, username):
                 "n": n_100g
             })
     return recipe_ingredients
+
+
+# ==============================================================================
+# CURADORIA DE INGREDIENTES BASE PARA CONFEITARIA & PRODUÇÃO ARTESANAL
+# ==============================================================================
+
+INGREDIENT_CATEGORIES = [
+    "⭐ Todos os Ingredientes Base",
+    "🏆 Só os Mais Usados na Confeitaria",
+    "🥛 Laticínios, Queijos & Ovos",
+    "🍫 Chocolates, Açúcares & Doces",
+    "🌾 Farinhas, Amidos & Grãos",
+    "🍓 Frutas, Polpas & Vegetais",
+    "🧈 Manteigas, Óleos & Gorduras",
+    "🥜 Castanhas, Coco & Oleaginosas",
+    "➕ Meus Cadastrados & Sub-receitas",
+]
+
+_TOP_CONFECTIONERY_LIST = [
+    ("TACO-453", "⭐ Leite Condensado Integral", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-447", "⭐ Creme de Leite", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-459", "⭐ Leite em Pó Integral (tipo Ninho)", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-458", "⭐ Leite de Vaca Integral (Líquido)", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-262", "⭐ Manteiga sem Sal", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-261", "⭐ Manteiga com Sal", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-264", "⭐ Margarina sem Sal (80% lipídeos)", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-489", "⭐ Ovo de Galinha Inteiro (Cru)", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-487", "⭐ Gema de Ovo de Galinha", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-486", "⭐ Clara de Ovo de Galinha", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-35",  "⭐ Farinha de Trigo Tradicional", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-42",  "⭐ Amido de Milho (Maisena)", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-146", "⭐ Polvilho Doce", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-7",   "⭐ Aveia em Flocos", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-43",  "⭐ Fubá de Milho", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-494", "⭐ Açúcar Refinado", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-492", "⭐ Açúcar Cristal", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-493", "⭐ Açúcar Mascavo", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-507", "⭐ Mel de Abelha", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-503", "⭐ Glucose / Glicose de Milho", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0011K",   "⭐ Chocolate em Pó (50% / Culinário)", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0090K",   "⭐ Cacau em Pó 100% (Sem Açúcar)", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-491", "⭐ Achocolatado em Pó", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-495", "⭐ Chocolate ao Leite (Barra / Gotas)", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-498", "⭐ Chocolate Meio Amargo (Barra / Gotas)", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0164K",   "⭐ Chocolate Branco", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0194K",   "⭐ Chocolate Granulado", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0128K",   "⭐ Creme de Avelã com Cacau (tipo Nutella)", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-501", "⭐ Doce de Leite Cremoso", "🍫 Chocolates, Açúcares & Doces"),
+    ("TACO-198", "⭐ Goiabada (Doce de Goiaba em Pasta)", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0009G",   "⭐ Cream Cheese Tradicional", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-468", "⭐ Requeijão Cremoso", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-463", "⭐ Queijo Muçarela", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-464", "⭐ Queijo Parmesão", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-461", "⭐ Queijo Minas Frescal", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-469", "⭐ Queijo Ricota", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-448", "⭐ Iogurte Natural Integral", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-522", "⭐ Chantilly (Creme Vegetal)", "🥛 Laticínios, Queijos & Ovos"),
+    ("TACO-523", "⭐ Leite de Coco", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-590", "⭐ Coco Ralado / Coco Fresco", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-8",   "⭐ Biscoito Maisena (p/ Tortas e Palha Italiana)", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-239", "⭐ Morango Fresco (Cru)", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-232", "⭐ Maracujá In Natura", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-233", "⭐ Polpa de Maracujá Congelada", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-220", "⭐ Limão Tahiti", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-214", "⭐ Laranja Pêra", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-182", "⭐ Banana Prata", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-164", "⭐ Abacaxi Fresco", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-222", "⭐ Maçã Fuji", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-110", "⭐ Cenoura Crua", "🍓 Frutas, Polpas & Vegetais"),
+    ("TACO-557", "⭐ Amendoim Cru", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-579", "⭐ Paçoca de Amendoim", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-587", "⭐ Amêndoa Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-588", "⭐ Castanha de Caju Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-589", "⭐ Castanha-do-Pará / Brasil", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-597", "⭐ Nozes", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-272", "⭐ Óleo de Soja", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-269", "⭐ Óleo de Girassol", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-270", "⭐ Óleo de Milho", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-260", "⭐ Azeite de Oliva Extra Virgem", "🧈 Manteigas, Óleos & Gorduras"),
+    ("TACO-513", "⭐ Fermento em Pó Químico (p/ Bolo)", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-514", "⭐ Fermento Biológico (p/ Pão)", "🌾 Farinhas, Amidos & Grãos"),
+    ("TACO-515", "⭐ Gelatina em Pó", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0778B",   "⭐ Canela em Pó", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0027L",   "⭐ Extrato / Essência de Baunilha", "🍫 Chocolates, Açúcares & Doces"),
+]
+
+TOP_CONFECTIONERY_MAP = {
+    code: {"rank": idx, "alias": alias, "category": cat}
+    for idx, (code, alias, cat) in enumerate(_TOP_CONFECTIONERY_LIST)
+}
+
+_PREPARED_DISH_MARKERS = (
+    "c/ sal", "s/ sal", "c/sal", "s/sal", "c / sal", "s / sal",
+    "s/ óleo", "c/ óleo", "s/ oleo", "c/ oleo",
+    "refogad", "grelhad", "frito", "frita", "assado", "assada",
+    "ensopad", "cozido,", "cozida,", "caseiro", "caseira",
+    "à milanesa", "à parmegiana", "ao molho", "c/ molho", "s/ molho",
+    "mistura p/", "mistura para", "preparado", "preparada",
+    "drenado", "drenada", "rechead", "c/ cobertura", "c/ recheio",
+    "industrializad", "infantil", "dietétic", "diet,"
+)
+
+_PREPARED_DISH_PREFIXES = (
+    "sanduíche", "sanduiche", "pizza", "macarrão", "macarrao", "lasanha",
+    "canelone", "ravioli", "risoto", "panqueca", "bife ", "croquete",
+    "pastel", "coxinha", "empada", "esfiha", "quiche", "suflê", "sufle",
+    "omelete", "sopa", "caldo,", "salada", "vitamina,", "bebida,", "bebida láctea",
+    "papa de", "arroz,", "feijão,", "feijao,", "bolo,", "torta,", "pudim",
+    "mousse", "pavê", "pave", "brigadeiro", "beijinho", "torrada", "croissant",
+    "pamonha", "curau", "canjica", "cuscuz", "tapioca", "pipoca", "farofa",
+    "maionese", "refrigerante", "chá,", "cha,", "suco ", "flan,", "maria mole",
+    "pão,", "pao,", "biscoito,", "bombom,"
+)
+
+
+def is_pure_culinary_ingredient(food: dict) -> bool:
+    """
+    Identifica se um item da base unificada é um ingrediente base culinário/confeitaria
+    (excluindo os ~4.500 pratos prontos de restaurante, refeições temperadas e fórmulas hospitalares).
+    """
+    code = food.get("c", "")
+    if code in TOP_CONFECTIONERY_MAP:
+        return True
+
+    source = food.get("f", "")
+    if source in ("CADASTRO", "Usuário"):
+        return True
+
+    group = food.get("g", "")
+    if group in ("Alimentos para fins especiais", "Pescados e Frutos do mar", "Carnes e derivados", "Alimentos industrializados"):
+        return False
+
+    desc = (food.get("d", "") or "").strip()
+    desc_low = desc.lower()
+
+    # Pratos compostos da TBCA trazem os ingredientes da preparação listados entre parênteses
+    if "(" in desc and "," in desc.split("(", 1)[1]:
+        return False
+
+    if any(marker in desc_low for marker in _PREPARED_DISH_MARKERS):
+        return False
+
+    if desc_low.startswith(_PREPARED_DISH_PREFIXES):
+        return False
+
+    return True
+
+
+def classify_ingredient_category(food: dict) -> str:
+    """
+    Classifica um ingrediente em uma das categorias amigáveis para confeitaria e produção artesanal.
+    """
+    code = food.get("c", "")
+    if code in TOP_CONFECTIONERY_MAP:
+        return TOP_CONFECTIONERY_MAP[code]["category"]
+
+    source = food.get("f", "")
+    if source in ("CADASTRO", "Usuário"):
+        return "➕ Meus Cadastrados & Sub-receitas"
+
+    group = (food.get("g", "") or "").lower()
+    desc = (food.get("d", "") or "").lower()
+
+    if "leite" in group or "ovos" in group or any(w in desc for w in ("leite", "queijo", "iogurte", "requeijão", "ricota", "ovo", "creme de leite")):
+        return "🥛 Laticínios, Queijos & Ovos"
+    if "açucarados" in group or any(w in desc for w in ("açúcar", "acucar", "chocolate", "cacau", "mel", "doce", "gelatina", "baunilha", "canela")):
+        return "🍫 Chocolates, Açúcares & Doces"
+    if "gorduras" in group or any(w in desc for w in ("manteiga", "margarina", "óleo", "oleo", "azeite", "banha", "gordura")):
+        return "🧈 Manteigas, Óleos & Gorduras"
+    if "nozes" in group or "sementes" in group or any(w in desc for w in ("castanha", "amendoim", "amêndoa", "noz", "avelã", "coco", "gergelim", "linhaça", "chia")):
+        return "🥜 Castanhas, Coco & Oleaginosas"
+    if "frutas" in group or "vegetais" in group or any(w in desc for w in ("morango", "limão", "maracujá", "banana", "laranja", "abacaxi", "maçã", "cenoura", "abóbora", "polpa")):
+        return "🍓 Frutas, Polpas & Vegetais"
+    if "cereais" in group or any(w in desc for w in ("farinha", "amido", "polvilho", "aveia", "fubá", "milho", "trigo", "fermento")):
+        return "🌾 Farinhas, Amidos & Grãos"
+
+    return "🌾 Farinhas, Amidos & Grãos"
+
+
+def format_ingredient_option_label(food: dict) -> str:
+    """
+    Formata o rótulo do ingrediente no seletor destacando os Top Insumos da Confeitaria
+    com seus nomes comerciais populares.
+    """
+    code = food.get("c", "")
+    clean_d = (food.get("d", "") or "").rstrip(", ").strip()
+    source = food.get("f", "")
+    if code in TOP_CONFECTIONERY_MAP:
+        alias = TOP_CONFECTIONERY_MAP[code]["alias"]
+        return f"{alias} — [{source}: {clean_d}]"
+    if source in ("CADASTRO", "Usuário"):
+        return f"➕ {clean_d} [{source}]"
+    return f"[{source}] {clean_d}"
+
+
+def filter_and_rank_ingredients(
+    foods_list: list,
+    search_query: str = "",
+    category: str = "⭐ Todos os Ingredientes Base",
+    include_prepared_dishes: bool = False
+) -> list:
+    """
+    Filtra e ordena os ingredientes priorizando:
+    1. Modo Ingredientes Puros (oculta os ~4.500 pratos prontos da TBCA por padrão)
+    2. Filtro por categoria de confeitaria
+    3. Busca por nome comercial (alias), descrição oficial ou código
+    4. Ordenação inteligente: Top Confeitaria e cadastrados primeiro -> nome começando pelo termo -> TACO antes de TBCA
+    """
+    import unicodedata
+
+    def _norm(s: str) -> str:
+        if not s:
+            return ""
+        nfkd = unicodedata.normalize("NFKD", s)
+        return "".join([c for c in nfkd if not unicodedata.combining(c)]).lower()
+
+    # 1. Filtrar pratos prontos (a menos que o usuário peça a base completa)
+    if include_prepared_dishes:
+        pool = list(foods_list)
+    else:
+        pool = [f for f in foods_list if is_pure_culinary_ingredient(f)]
+
+    # 2. Filtrar por categoria selecionada
+    if category == "🏆 Só os Mais Usados na Confeitaria":
+        pool = [f for f in pool if f.get("c", "") in TOP_CONFECTIONERY_MAP]
+    elif category and category != "⭐ Todos os Ingredientes Base":
+        pool = [f for f in pool if classify_ingredient_category(f) == category]
+
+    q_norm = _norm((search_query or "").strip())
+    q_words = [w for w in q_norm.split() if w]
+
+    # 3. Se não há termo de busca, retornar os Top Confeitaria + Cadastrados + Ingredientes TACO ordenados
+    if not q_words:
+        def _default_sort_key(food):
+            code = food.get("c", "")
+            source = food.get("f", "")
+            if code in TOP_CONFECTIONERY_MAP:
+                return (0, TOP_CONFECTIONERY_MAP[code]["rank"], "")
+            if source in ("CADASTRO", "Usuário"):
+                return (1, 0, _norm(food.get("d", "")))
+            if source == "TACO":
+                return (2, 0, _norm(food.get("d", "")))
+            return (3, 0, _norm(food.get("d", "")))
+
+        return sorted(pool, key=_default_sort_key)[:120]
+
+    # 4. Com termo de busca: pesquisar no alias comercial, descrição e código
+    matched = []
+    for f in pool:
+        code = f.get("c", "")
+        alias_norm = _norm(TOP_CONFECTIONERY_MAP[code]["alias"]) if code in TOP_CONFECTIONERY_MAP else ""
+        desc_norm = _norm(f.get("d", ""))
+        code_norm = _norm(code)
+        combined = f"{alias_norm} {desc_norm} {code_norm}"
+        if all(w in combined for w in q_words):
+            matched.append(f)
+
+    def _search_sort_key(food):
+        code = food.get("c", "")
+        source = food.get("f", "")
+        desc_norm = _norm(food.get("d", ""))
+        alias_norm = _norm(TOP_CONFECTIONERY_MAP[code]["alias"]) if code in TOP_CONFECTIONERY_MAP else ""
+
+        # Prioridade 0: Código exato
+        if _norm(code) == q_norm:
+            return (0, 0, 0, 0, 0, 0, len(desc_norm))
+
+        # Prioridade 1: Está nos Top 65 da Confeitaria ou foi cadastrado pela usuária
+        is_top_or_custom = 0 if (code in TOP_CONFECTIONERY_MAP or source in ("CADASTRO", "Usuário")) else 1
+        top_rank = TOP_CONFECTIONERY_MAP[code]["rank"] if code in TOP_CONFECTIONERY_MAP else 999
+
+        # Prioridade 2: Começa com a primeira palavra buscada
+        first_w = q_words[0]
+        starts_with = 0 if (desc_norm.startswith(first_w) or alias_norm.replace("⭐ ", "").startswith(first_w)) else 1
+
+        # Prioridade 3: TACO (ingredientes puros) antes de TBCA
+        source_rank = 0 if source in ("CADASTRO", "Usuário", "TACO") else 1
+
+        # Prioridade 4: Posição da busca e tamanho do texto (nomes mais curtos = mais puros)
+        pos_desc = desc_norm.find(first_w)
+        pos_score = pos_desc if pos_desc >= 0 else 999
+
+        return (1, is_top_or_custom, starts_with, top_rank, source_rank, pos_score, len(desc_norm))
+
+    return sorted(matched, key=_search_sort_key)[:100]
+
