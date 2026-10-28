@@ -18,13 +18,15 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.10.23.v4"
+_EXPECTED_UTILS_VERSION = "2026.10.28.v1"
+import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "consume_user_credit_sql"),
     (_mod_data_loader, "get_ingredient_smart_defaults"),
-    (_mod_auth, "consume_user_credit"),
+    (_mod_auth, "register_customer"),
     (_mod_calculations, "calculate_monthly_sales_goal"),
     (_mod_ui, "inject_custom_css"),
+    (_mod_webhook, "create_mercado_pago_preference"),
 ):
     if getattr(_mod, "_MODULE_VERSION", None) != _EXPECTED_UTILS_VERSION or not hasattr(_mod, _req_attr):
         try:
@@ -33,6 +35,11 @@ for _mod, _req_attr in (
             pass
 
 from utils.auth import authenticate_user, register_user, admin_update_user, admin_delete_user, load_users, recover_password_email, consume_user_credit
+from utils.auth import (
+    register_customer, update_user_profile, user_needs_profile_completion, get_user_document,
+    validate_document, validate_phone, format_document, format_phone, mask_document, only_digits,
+    SEGMENT_OPTIONS,
+)
 from utils.data_loader import (
     load_unified_data, load_saved_recipes, save_recipe, delete_recipe,
     get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
@@ -578,6 +585,128 @@ def trigger_consume_credit():
     finally:
         st.session_state.credito_sendo_consumido = False
 
+# --- COMPONENTES DE DADOS CADASTRAIS (CPF/CNPJ com máscara automática, WhatsApp) ---
+_DOC_LABELS = {"CPF": "CPF", "CNPJ": "CNPJ (MEI)"}
+
+
+def _fmt_widget_callback(widget_key: str, formatter):
+    """Reaplica a máscara assim que a pessoa sai do campo (ou aperta Enter)."""
+    st.session_state[widget_key] = formatter(st.session_state.get(widget_key, ""))
+
+
+def render_document_input(prefix: str, default_tipo: str = "CPF", required: bool = True, help_text: str = ""):
+    """
+    Seletor CPF / CNPJ (MEI) que troca automaticamente o formato do campo.
+    Retorna (tipo, valor_digitado).
+    """
+    tipo_key = f"{prefix}_doc_tipo"
+    if tipo_key not in st.session_state:
+        st.session_state[tipo_key] = default_tipo if default_tipo in _DOC_LABELS else "CPF"
+    tipo = st.radio(
+        "Tipo de documento" + ("*" if required else "") + ":",
+        options=list(_DOC_LABELS.keys()),
+        format_func=lambda t: _DOC_LABELS[t],
+        horizontal=True,
+        key=tipo_key,
+    )
+    is_cnpj = tipo == "CNPJ"
+    field_key = f"{prefix}_doc_{tipo}"
+    st.text_input(
+        ("CNPJ do MEI / Empresa" if is_cnpj else "CPF") + ("*" if required else "") + ":",
+        placeholder="00.000.000/0000-00" if is_cnpj else "000.000.000-00",
+        max_chars=18 if is_cnpj else 14,
+        key=field_key,
+        on_change=_fmt_widget_callback,
+        args=(field_key, lambda v, _t=tipo: format_document(_t, v)),
+        help=help_text or None,
+    )
+    value = st.session_state.get(field_key, "")
+    digits = only_digits(value)
+    expected = 14 if is_cnpj else 11
+    if digits:
+        if len(digits) < expected:
+            st.caption(f"✍️ Faltam {expected - len(digits)} número(s).")
+        else:
+            ok, _, err = validate_document(tipo, digits)
+            if ok:
+                st.caption(f"✅ {_DOC_LABELS[tipo]} válido: {format_document(tipo, digits)}")
+            else:
+                st.caption(f"❌ {err}")
+    return tipo, value
+
+
+def render_phone_input(prefix: str, default_value: str = ""):
+    field_key = f"{prefix}_phone"
+    if field_key not in st.session_state and default_value:
+        st.session_state[field_key] = format_phone(default_value)
+    st.text_input(
+        "WhatsApp (opcional):",
+        placeholder="(11) 98765-4321",
+        max_chars=16,
+        key=field_key,
+        on_change=_fmt_widget_callback,
+        args=(field_key, format_phone),
+        help="Usado apenas para suporte e avisos sobre seus pagamentos.",
+    )
+    value = st.session_state.get(field_key, "")
+    if only_digits(value) and not validate_phone(value):
+        st.caption("❌ Confira o DDD e o número (ex: (11) 98765-4321).")
+    return value
+
+
+def render_profile_extras(prefix: str, user: dict = None):
+    user = user or {}
+    seg_default = user.get("segmento", "") or ""
+    seg_opts = SEGMENT_OPTIONS if seg_default in SEGMENT_OPTIONS else SEGMENT_OPTIONS + [seg_default]
+    nome_negocio = st.text_input("Nome do negócio / ateliê:", value=user.get("nome_negocio", ""), placeholder="Ex: Doces da Márcia", key=f"{prefix}_negocio")
+    c1, c2 = st.columns(2)
+    segmento = c1.selectbox("O que você produz?", seg_opts, index=seg_opts.index(seg_default),
+                            format_func=lambda s: s or "Selecione...", key=f"{prefix}_segmento")
+    cidade_uf = c2.text_input("Cidade / UF:", value=user.get("cidade_uf", ""), placeholder="Ex: Campinas/SP", key=f"{prefix}_cidade")
+    return nome_negocio, segmento, cidade_uf
+
+
+def render_lgpd_terms():
+    with st.expander("🛡️ Ler Termos de Uso e Política de Privacidade (LGPD)"):
+        st.markdown("""
+        **TERMO DE CONSENTIMENTO E PRIVACIDADE (LGPD — Lei nº 13.709/2018) — versão 2.0**
+
+        1. **Quais dados coletamos e para quê:**
+           - **Nome completo e e-mail:** identificar sua conta, fazer login, recuperar senha e enviar recibos.
+           - **CPF ou CNPJ:** garantir 1 crédito grátis por pessoa/empresa (evitar contas duplicadas), emitir nota fiscal e informar o pagador ao Mercado Pago (antifraude). O número fica **criptografado**.
+           - **WhatsApp (opcional):** suporte e avisos sobre pagamentos.
+           - **Nome do negócio, segmento e cidade (opcionais):** personalizar o app e seus rótulos.
+           - **Senha:** guardamos apenas o hash criptografado (`bcrypt`), nunca a senha.
+           - **Fichas técnicas e receitas** que você salvar.
+        2. **Compartilhamento:** não vendemos nem divulgamos seus dados ou receitas. Nome, e-mail e CPF/CNPJ são enviados apenas ao Mercado Pago no momento da compra.
+        3. **Seus direitos:** você pode acessar e corrigir seus dados em **Meu Perfil** e pedir a exclusão da conta pelo **Suporte & Ajuda**.
+        4. **Marketing:** só enviaremos novidades se você marcar a opção específica.
+        """)
+
+
+def _reset_session_profile_flags():
+    for _k in ("profile_checked", "needs_profile", "display_name"):
+        st.session_state.pop(_k, None)
+
+
+def get_payer_info(user: dict = None) -> dict:
+    """Nome e CPF/CNPJ (descriptografado) do usuário logado para o checkout do Mercado Pago."""
+    try:
+        if user is None:
+            user = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), None)
+        if not user:
+            return {}
+        doc_tipo, doc_digits = get_user_document(user)
+        return {
+            "nome_completo": user.get("nome_completo", "") or "",
+            "documento_tipo": doc_tipo,
+            "documento_numero": doc_digits,
+        }
+    except Exception as e:
+        logger.warning(f"Não foi possível montar dados do pagador: {e}")
+        return {}
+
+
 # --- LOGIN / CADASTRO FLOW ---
 if not st.session_state.logged_in:
     # CSS injetado específico para a tela de login (foco no 'Above the Fold')
@@ -664,13 +793,14 @@ if not st.session_state.logged_in:
         with tab_login:
             st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Entrar no Sistema</h4>', unsafe_allow_html=True)
             with st.form("form_login_usuario"):
-                login_user = st.text_input("Usuário ou E-mail:", placeholder="Digite seu usuário ou e-mail", key="login_username_field")
+                login_user = st.text_input("E-mail ou CPF/CNPJ:", placeholder="Digite seu e-mail ou CPF/CNPJ", key="login_username_field")
                 login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
                 
                 submit_login = st.form_submit_button("Acessar Painel", type="primary", use_container_width=True)
                 if submit_login:
                     success, result, is_admin = authenticate_user(login_user, login_pass, db_lock)
                     if success:
+                        _reset_session_profile_flags()
                         st.session_state.logged_in = True
                         st.session_state.username = result
                         st.session_state.is_admin = is_admin
@@ -680,47 +810,59 @@ if not st.session_state.logged_in:
                         st.error(result)
                         
         with tab_registro:
-            st.markdown('<h4 style="margin-top: 15px; margin-bottom: 6px; color: #0b3b4c; text-align: center;">Criar Conta Rápida</h4>', unsafe_allow_html=True)
-            st.caption("✨ Sem burocracia: não pedimos CPF agora e você já começa com 1 crédito de rótulo grátis!")
-            with st.form("form_registro_usuario"):
-                new_user = st.text_input("Seu Nome ou Nome do Ateliê (Usuário):", placeholder="Ex: marcia_doces", key="reg_username_field")
-                new_email = st.text_input("Seu E-mail:", placeholder="Ex: marcia@email.com", key="reg_email_field")
-                new_pass = st.text_input("Crie uma Senha:", type="password", placeholder="Mínimo de 8 caracteres", key="reg_password_field")
-                
-                with st.expander("🛡️ Ler Termos de Uso e Política de Privacidade (LGPD)"):
-                    st.markdown("""
-                    **TERMO DE CONSENTIMENTO E PRIVACIDADE (LGPD)**
-                    
-                    De acordo com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018), este termo informa como tratamos suas informações:
-                    
-                    1. **Quais dados coletamos:** Coletamos seu nome de usuário e e-mail para fins de identificação e segurança, além do hash criptografado (`bcrypt`) da sua senha e as fichas técnicas que você salvar.
-                    2. **Finalidade:** Permitir que você gerencie, edite e visualize suas próprias fichas técnicas e rótulos de forma privada.
-                    3. **Armazenamento e Compartilhamento:** Não compartilhamos, vendemos ou divulgamos suas receitas ou credenciais para terceiros em hipótese alguma.
-                    4. **Exclusão de Dados:** Você é proprietária(o) dos seus dados e pode excluir suas receitas a qualquer momento.
-                    """)
-                
-                lgpd_accept = st.checkbox("Li e concordo com os Termos de Uso e Privacidade (LGPD).", value=True, key="lgpd_checkbox")
-                
-                submit_register = st.form_submit_button("🚀 Criar Conta e Começar Agora", type="primary", use_container_width=True)
-                if submit_register:
-                    if not new_user.strip() or not new_email.strip() or not new_pass:
-                        st.error("Por favor, preencha seu nome de usuário, e-mail e senha.")
-                    elif len(new_pass) < 8:
-                        st.error("A senha deve ter pelo menos 8 caracteres para sua segurança.")
-                    elif not lgpd_accept:
-                        st.error("Você precisa aceitar os termos de privacidade da LGPD para prosseguir.")
+            st.markdown('<h4 style="margin-top: 15px; margin-bottom: 6px; color: #0b3b4c; text-align: center;">Criar Conta Grátis</h4>', unsafe_allow_html=True)
+            st.caption("✨ Leva 1 minuto e você já começa com **1 crédito de rótulo grátis**! Campos com * são obrigatórios.")
+            with st.container(border=True):
+                reg_nome = st.text_input("Nome completo*:", placeholder="Ex: Márcia Aparecida Souza", key="reg_nome_field")
+                reg_email = st.text_input("E-mail*:", placeholder="Ex: marcia@email.com", key="reg_email_field")
+                reg_doc_tipo, reg_doc = render_document_input(
+                    "reg",
+                    help_text="Usamos seu CPF/CNPJ só para garantir 1 crédito grátis por pessoa e emitir sua nota fiscal. Ele fica criptografado.",
+                )
+                st.caption("🔒 Seu documento fica **criptografado** e serve apenas para garantir 1 crédito grátis por pessoa e para a nota fiscal.")
+                reg_phone = render_phone_input("reg")
+                rp1, rp2 = st.columns(2)
+                reg_pass = rp1.text_input("Crie uma senha*:", type="password", placeholder="Mínimo de 8 caracteres", key="reg_password_field")
+                reg_pass2 = rp2.text_input("Repita a senha*:", type="password", placeholder="Digite a mesma senha", key="reg_password_confirm_field")
+                if reg_pass and reg_pass2 and reg_pass != reg_pass2:
+                    st.caption("❌ As senhas não são iguais.")
+
+                with st.expander("➕ Conte mais sobre seu negócio (opcional)"):
+                    reg_negocio, reg_segmento, reg_cidade = render_profile_extras("reg")
+
+                render_lgpd_terms()
+                lgpd_accept = st.checkbox("Li e aceito os Termos de Uso e a Política de Privacidade (LGPD)*.", value=False, key="lgpd_checkbox")
+                marketing_accept = st.checkbox("Quero receber dicas de precificação e novidades por e-mail/WhatsApp (opcional).", value=False, key="marketing_checkbox")
+
+                if st.button("🚀 Criar conta e ganhar 1 rótulo grátis", type="primary", use_container_width=True, key="btn_register_submit"):
+                    success, msg, new_username = register_customer(
+                        nome_completo=reg_nome,
+                        email=reg_email,
+                        documento_tipo=reg_doc_tipo,
+                        documento=reg_doc,
+                        password=reg_pass,
+                        password_confirm=reg_pass2,
+                        telefone=reg_phone,
+                        nome_negocio=reg_negocio,
+                        segmento=reg_segmento,
+                        cidade_uf=reg_cidade,
+                        lgpd_accepted=lgpd_accept,
+                        marketing_optin=marketing_accept,
+                        db_lock=db_lock,
+                    )
+                    if success:
+                        _reset_session_profile_flags()
+                        st.session_state.logged_in = True
+                        st.session_state.username = new_username
+                        st.session_state.is_admin = False
+                        st.session_state.display_name = reg_nome.strip().split(" ")[0]
+                        st.session_state.profile_checked = True
+                        st.session_state.needs_profile = False
+                        st.toast(f"Conta criada! Bem-vinda(o), {st.session_state.display_name}!")
+                        st.rerun()
                     else:
-                        success, msg = register_user(new_user, new_email, "", new_pass, lgpd_accept, db_lock)
-                        if success:
-                            st.session_state.logged_in = True
-                            st.session_state.username = new_user.strip()
-                            st.session_state.is_admin = False
-                            st.success(msg)
-                            st.toast(f"Conta criada! Bem-vinda(o), {new_user.strip()}!")
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                            
+                        st.error(msg)
+
         with tab_recuperar:
             st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Recuperação de Senha</h4>', unsafe_allow_html=True)
             st.info("Para redefinir sua senha, informe o e-mail cadastrado na sua conta. Você receberá uma senha temporária.")
@@ -766,6 +908,64 @@ if not st.session_state.logged_in:
             </div>
             """, unsafe_allow_html=True)
             st.caption("👆 Clique na aba **Criar Conta Grátis** acima para salvar suas fichas técnicas completas!")
+    st.stop()
+
+# --- COMPLETAR CADASTRO (contas antigas sem nome completo / CPF-CNPJ) — exigido logo após o login ---
+if not st.session_state.get("profile_checked", False):
+    try:
+        _me = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), None)
+    except Exception as _prof_err:
+        logger.error(f"Falha ao verificar cadastro de '{st.session_state.username}': {_prof_err}")
+        _me = None
+    if _me is not None:
+        st.session_state.display_name = ((_me.get("nome_completo") or "").strip().split(" ") or [""])[0] or st.session_state.username
+        st.session_state.needs_profile = user_needs_profile_completion(_me)
+        st.session_state.profile_checked = True
+
+if st.session_state.get("needs_profile", False):
+    _me = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), {}) or {}
+    _c1, _c2, _c3 = st.columns([1, 1.6, 1])
+    with _c2:
+        st.markdown("### 📝 Falta pouco! Complete seu cadastro")
+        st.info(
+            "Atualizamos nossos Termos e agora pedimos **nome completo** e **CPF ou CNPJ** de todas as contas. "
+            "Isso garante 1 crédito grátis por pessoa e permite emitir sua nota fiscal. "
+            "**Suas receitas e créditos continuam salvos.**"
+        )
+        with st.container(border=True):
+            cp_nome = st.text_input("Nome completo*:", value=_me.get("nome_completo", ""), placeholder="Ex: Márcia Aparecida Souza", key="cp_nome")
+            cp_email = st.text_input("E-mail*:", value=_me.get("email", ""), key="cp_email")
+            cp_doc_tipo, cp_doc = render_document_input("cp", default_tipo=_me.get("documento_tipo") or "CPF")
+            cp_phone = render_phone_input("cp", default_value=_me.get("telefone", ""))
+            with st.expander("➕ Conte mais sobre seu negócio (opcional)"):
+                cp_negocio, cp_segmento, cp_cidade = render_profile_extras("cp", _me)
+            render_lgpd_terms()
+            cp_lgpd = st.checkbox("Li e aceito os Termos de Uso e a Política de Privacidade (LGPD) — versão 2.0*.", value=False, key="cp_lgpd")
+            cp_mkt = st.checkbox("Quero receber dicas de precificação e novidades (opcional).", value=bool(_me.get("marketing_optin", False)), key="cp_mkt")
+
+            if st.button("✅ Salvar e continuar", type="primary", use_container_width=True, key="cp_submit"):
+                if not cp_lgpd:
+                    st.error("Você precisa marcar o aceite dos Termos de Uso e da Política de Privacidade.")
+                else:
+                    ok_cp, msg_cp = update_user_profile(
+                        st.session_state.username, cp_nome, cp_email, telefone=cp_phone,
+                        nome_negocio=cp_negocio, segmento=cp_segmento, cidade_uf=cp_cidade,
+                        documento_tipo=cp_doc_tipo, documento=cp_doc, lgpd_accepted=True,
+                        marketing_optin=cp_mkt, require_document=True, db_lock=db_lock,
+                    )
+                    if ok_cp:
+                        st.session_state.needs_profile = False
+                        st.session_state.display_name = cp_nome.strip().split(" ")[0]
+                        st.toast("Cadastro completo! Obrigado 💚")
+                        st.rerun()
+                    else:
+                        st.error(msg_cp)
+        if st.button("Sair da conta", key="cp_logout"):
+            st.session_state.logged_in = False
+            st.session_state.username = ""
+            st.session_state.is_admin = False
+            _reset_session_profile_flags()
+            st.rerun()
     st.stop()
 
 # --- NAVEGAÇÃO NA SIDEBAR ---
@@ -845,7 +1045,7 @@ with st.sidebar:
     st.markdown(f"""
     <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; font-size: 0.8rem; color: #4b5563; margin-top: 15px;">
         <p style="margin: 0; font-weight: bold; font-size: 0.7rem; text-transform: uppercase; color: #9ca3af; letter-spacing: 0.5px;">Sessão Ativa</p>
-        <p style="margin: 3px 0 4px 0; font-size: 0.85rem; color: #111827;"><strong>{html.escape(st.session_state.username)}</strong></p>
+        <p style="margin: 3px 0 4px 0; font-size: 0.85rem; color: #111827;"><strong>{html.escape(st.session_state.get("display_name") or st.session_state.username)}</strong></p>
         <p style="margin: 0; font-size: 0.76rem; color: #059669; font-weight: 700;">{plan_info_sb['plan_label']}</p>
     </div>
     """, unsafe_allow_html=True)
@@ -859,6 +1059,7 @@ with st.sidebar:
         st.session_state.calculated = False
         st.session_state.nome_produto = ""
         st.session_state.peso_embalagem = 0.0
+        _reset_session_profile_flags()
         st.toast("Você saiu da conta.")
         st.rerun()
 
@@ -1821,7 +2022,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     from utils.webhook_handler import create_mercado_pago_preference
                     selected_pkg = st.selectbox("Selecione um pacote:", options=packages, format_func=lambda x: f"{x['name']} - R$ {x['price']:.2f}", key="pdf_buy_credits_select")
                     if access_token:
-                        init_point = create_mercado_pago_preference(username=st.session_state.username, email=current_user_pdf.get("email", "") if current_user_pdf else "", credits=selected_pkg['credits'], price=selected_pkg['price'], access_token=access_token, back_url=back_url)
+                        init_point = create_mercado_pago_preference(username=st.session_state.username, email=current_user_pdf.get("email", "") if current_user_pdf else "", credits=selected_pkg['credits'], price=selected_pkg['price'], access_token=access_token, back_url=back_url, **get_payer_info())
                         if init_point:
                             st.link_button(f"💳 Comprar (R$ {selected_pkg['price']:.2f})", init_point, type="primary", use_container_width=True)
                 else:
@@ -2086,41 +2287,41 @@ if st.session_state.selected_page == "Meu Perfil":
     user_data = next((u for u in all_users if u['username'] == current_username), None)
     
     if user_data:
-        with st.form('form_meu_perfil'):
-            edit_email = st.text_input('E-mail:', value=user_data.get('email', ''))
-            
-            # Formatar CPF atual (se for hash, exibe mascarado por privacidade)
-            c = user_data.get('cpf', '')
-            from utils.auth import is_hashed_cpf
-            if is_hashed_cpf(c):
-                cpf_display = "***.***.***-**"
+        _pf_doc_tipo, _pf_doc_digits = get_user_document(user_data)
+        with st.container(border=True):
+            st.markdown("#### 👤 Dados pessoais")
+            pf_nome = st.text_input("Nome completo*:", value=user_data.get("nome_completo", ""), key="pf_nome")
+            pf_email = st.text_input("E-mail*:", value=user_data.get("email", ""), key="pf_email")
+            if user_data.get("documento_tipo"):
+                _shown = mask_document(user_data.get("documento_tipo"), _pf_doc_digits) if _pf_doc_digits else "••• (cadastrado e protegido)"
+                st.markdown(f"**Documento atual ({user_data.get('documento_tipo')}):** `{_shown}`")
             else:
-                c_digits = ''.join(filter(str.isdigit, c))
-                if len(c_digits) == 11:
-                    cpf_display = f'{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}'
-                else:
-                    cpf_display = c
-                
-            edit_cpf = st.text_input('CPF (Edite apenas se for alterar):', value=cpf_display)
-            edit_pass = st.text_input('Nova Senha (deixe em branco para manter a atual):', type='password')
-            edit_pass_confirm = st.text_input('Confirme a Nova Senha:', type='password')
-            
-            submit_perfil = st.form_submit_button('Salvar Alterações', type='primary')
-            if submit_perfil:
+                st.markdown("**Documento atual:** não informado")
+            with st.expander("✏️ Alterar CPF/CNPJ"):
+                pf_doc_tipo, pf_doc = render_document_input("pf", default_tipo=user_data.get("documento_tipo") or "CPF", required=False)
+            pf_phone = render_phone_input("pf", default_value=user_data.get("telefone", ""))
+            st.markdown("#### 🏪 Seu negócio (opcional)")
+            pf_negocio, pf_segmento, pf_cidade = render_profile_extras("pf", user_data)
+            pf_mkt = st.checkbox("Quero receber dicas de precificação e novidades.", value=bool(user_data.get("marketing_optin", False)), key="pf_mkt")
+            st.markdown("#### 🔑 Trocar senha (opcional)")
+            pp1, pp2 = st.columns(2)
+            edit_pass = pp1.text_input("Nova senha:", type="password", placeholder="Deixe em branco para manter", key="pf_pass")
+            edit_pass_confirm = pp2.text_input("Repita a nova senha:", type="password", key="pf_pass2")
+
+            if st.button("💾 Salvar Alterações", type="primary", key="pf_submit"):
                 if edit_pass and edit_pass != edit_pass_confirm:
-                    st.error('As senhas não coincidem.')
+                    st.error("As senhas não coincidem.")
                 else:
-                    success, msg = admin_update_user(
-                        current_username, 
-                        current_username, 
-                        edit_email, 
-                        edit_cpf, 
-                        db_lock, 
-                        edit_pass if edit_pass.strip() else None, 
-                        user_data.get('is_admin', False)
+                    success, msg = update_user_profile(
+                        current_username, pf_nome, pf_email, telefone=pf_phone,
+                        nome_negocio=pf_negocio, segmento=pf_segmento, cidade_uf=pf_cidade,
+                        documento_tipo=pf_doc_tipo, documento=pf_doc,
+                        new_password=edit_pass if edit_pass.strip() else None,
+                        marketing_optin=pf_mkt, db_lock=db_lock,
                     )
                     if success:
-                        st.success('Perfil atualizado com sucesso!')
+                        st.session_state.display_name = pf_nome.strip().split(" ")[0]
+                        st.success("Perfil atualizado com sucesso!")
                     else:
                         st.error(msg)
         
@@ -2163,7 +2364,8 @@ if st.session_state.selected_page == "Meu Perfil":
                         credits=pkg['credits'],
                         price=pkg['price'],
                         access_token=access_token,
-                        back_url=back_url
+                        back_url=back_url,
+                        **get_payer_info(user_data)
                     )
                     if init_point:
                         st.link_button(f"Comprar {pkg['name']}", init_point, type="primary", use_container_width=True)
@@ -2254,18 +2456,29 @@ if is_admin:
         users = load_users(db_lock)
         
         # Formatar CPF para exibição
-        def format_cpf(c):
+        def format_cpf(c, user=None):
+            # Documento sempre mascarado (LGPD). Hash legado sem versão criptografada aparece como protegido.
+            if user is not None:
+                _t, _d = get_user_document(user)
+                if _d:
+                    return f"{_t}: {mask_document(_t, _d)}"
+            if not c:
+                return "Não informado"
+            if len(c) == 64:
+                return "***.***.***-** (protegido)"
             c_digits = ''.join(filter(str.isdigit, c))
-            if len(c_digits) == 11:
-                return f"{c_digits[:3]}.{c_digits[3:6]}.{c_digits[6:9]}-{c_digits[9:]}"
-            return c
+            return mask_document("CNPJ" if len(c_digits) == 14 else "CPF", c_digits)
             
         users_display = []
         for u in users:
             users_display.append({
                 "Usuário": u["username"],
+                "Nome": u.get("nome_completo", "") or "—",
                 "E-mail": u.get("email", "N/A"),
-                "CPF": format_cpf(u.get("cpf", "N/A")),
+                "CPF/CNPJ": format_cpf(u.get("cpf", ""), u),
+                "WhatsApp": format_phone(u.get("telefone", "")) or "—",
+                "Segmento": u.get("segmento", "") or "—",
+                "Cadastro completo": "Não" if user_needs_profile_completion(u) else "Sim",
                 "Administrador": "Sim" if u.get("is_admin", False) else "Não",
                 "Créditos": u.get("creditos_disponiveis", 0),
                 "Aceite LGPD": u.get("lgpd_accepted_at", "N/A")
@@ -2356,7 +2569,7 @@ if is_admin:
                     with st.form("form_edit_user"):
                         edit_name = st.text_input("Nome de Usuário:", value=user_data["username"])
                         edit_email = st.text_input("E-mail:", value=user_data.get("email", ""))
-                        edit_cpf = st.text_input("CPF:", value=format_cpf(user_data.get("cpf", "")))
+                        edit_cpf = st.text_input("CPF/CNPJ (edite apenas se for alterar):", value=format_cpf(user_data.get("cpf", ""), user_data))
                         edit_pass = st.text_input("Nova Senha (deixe em branco para manter a atual):", type="password")
                         edit_is_admin = st.checkbox("Privilégios de Administrador", value=user_data.get("is_admin", False))
                         edit_credits = st.number_input("Créditos Disponíveis:", min_value=0, value=int(user_data.get("creditos_disponiveis", 0)), step=1)
@@ -2384,7 +2597,7 @@ if is_admin:
             with st.form("form_create_user_admin"):
                 create_name = st.text_input("Nome de Usuário:", placeholder="Ex: joao_silva")
                 create_email = st.text_input("E-mail:", placeholder="Ex: joao@provedor.com")
-                create_cpf = st.text_input("CPF (Opcional):", placeholder="Ex: 123.456.789-00")
+                create_cpf = st.text_input("CPF/CNPJ (Opcional):", placeholder="Ex: 123.456.789-00")
                 create_pass = st.text_input("Senha:", type="password", placeholder="Mínimo 8 caracteres")
                 create_is_admin = st.checkbox("Privilégios de Administrador")
                 create_credits = st.number_input("Créditos Iniciais:", min_value=0, value=1, step=1)

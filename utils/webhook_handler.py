@@ -5,6 +5,7 @@ import urllib.request
 from utils.auth import load_users, save_users
 
 logger = logging.getLogger(__name__)
+_MODULE_VERSION = "2026.10.28.v1"
 
 def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: str = None) -> tuple:
     """
@@ -175,7 +176,8 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
             logger.error("[Webhook-Handler] Falha ao gravar usuarios atualizados no banco de dados!")
             return False, "Erro ao salvar alterações no banco de dados de usuários."
 
-def create_mercado_pago_preference(username: str, email: str, credits: int, price: float, access_token: str, back_url: str) -> str:
+def create_mercado_pago_preference(username: str, email: str, credits: int, price: float, access_token: str, back_url: str,
+                                   nome_completo: str = "", documento_tipo: str = "", documento_numero: str = "") -> str:
     """
     Cria uma preferência de pagamento no Mercado Pago usando o SDK oficial
     e retorna o init_point (link de checkout).
@@ -186,6 +188,19 @@ def create_mercado_pago_preference(username: str, email: str, credits: int, pric
         
         # O payer email deve ser o e-mail real do usuário ou o e-mail/username
         payer_email = email.strip() if (email and "@" in email) else f"{username}@rotulofacil.com"
+        payer_data = {"email": payer_email}
+        # Dados do pagador melhoram a aprovação (antifraude) no Pix/cartão
+        nome_parts = (nome_completo or "").strip().split()
+        if nome_parts:
+            payer_data["name"] = nome_parts[0]
+            if len(nome_parts) > 1:
+                payer_data["surname"] = " ".join(nome_parts[1:])
+        doc_digits = "".join(filter(str.isdigit, documento_numero or ""))
+        if len(doc_digits) in (11, 14):
+            payer_data["identification"] = {
+                "type": "CNPJ" if len(doc_digits) == 14 else "CPF",
+                "number": doc_digits,
+            }
         
         preference_data = {
             "items": [
@@ -196,9 +211,7 @@ def create_mercado_pago_preference(username: str, email: str, credits: int, pric
                     "currency_id": "BRL"
                 }
             ],
-            "payer": {
-                "email": payer_email
-            },
+            "payer": payer_data,
             "external_reference": f"{username}:{credits}",
             "back_urls": {
                 "success": back_url,

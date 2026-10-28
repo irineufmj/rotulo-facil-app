@@ -8,7 +8,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.10.23.v3"
+_MODULE_VERSION = "2026.10.28.v1"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
@@ -146,6 +146,31 @@ def init_db_safe(engine):
         logger.error(f"[Database] Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
         log_db_error("init_db_error", e)
 
+    _migrate_user_profile_columns(engine)
+
+
+# Novos dados cadastrais (v2026.10.28) — migração apenas ADITIVA (ADD COLUMN IF NOT EXISTS), nunca remove dados.
+_USER_PROFILE_COLUMNS = [
+    "nome_completo VARCHAR(255)",
+    "telefone VARCHAR(20)",
+    "documento_tipo VARCHAR(4)",
+    "documento_enc TEXT",
+    "nome_negocio VARCHAR(255)",
+    "segmento VARCHAR(100)",
+    "cidade_uf VARCHAR(120)",
+    "marketing_optin BOOLEAN DEFAULT FALSE",
+]
+
+
+def _migrate_user_profile_columns(engine):
+    """Cada ALTER roda em transação própria para que uma falha isolada não aborte as demais."""
+    for col_def in _USER_PROFILE_COLUMNS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col_def}"))
+        except Exception as e:
+            logger.warning(f"[Database] Falha ao adicionar coluna '{col_def}': {e}")
+
 
 def get_db_engine():
     """
@@ -272,6 +297,10 @@ def load_users_sql(db_lock) -> list:
                 u["id_transacao_pagamento"] = _safe_str(u.get("id_transacao_pagamento"), "")
                 u["lgpd_accepted_at"] = _safe_str(u.get("lgpd_accepted_at"), "")
                 u["lgpd_version"] = _safe_str(u.get("lgpd_version"), "1.0")
+                for _k in ("nome_completo", "telefone", "documento_tipo", "documento_enc", "nome_negocio", "segmento", "cidade_uf"):
+                    u[_k] = _safe_str(u.get(_k), "")
+                mk_raw = u.get("marketing_optin", False)
+                u["marketing_optin"] = False if (mk_raw is None or pd.isna(mk_raw)) else bool(mk_raw)
                 is_adm_raw = u.get("is_admin", False)
                 u["is_admin"] = False if (is_adm_raw is None or pd.isna(is_adm_raw)) else bool(is_adm_raw)
                 u["creditos_disponiveis"] = _safe_int(u.get("creditos_disponiveis"), 1)
@@ -352,9 +381,19 @@ def save_users_sql(users: list, db_lock) -> bool:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
                     conn.execute(
                         text("""
-                        INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version)
-                        VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version)
+                        INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version,
+                                              nome_completo, telefone, documento_tipo, documento_enc, nome_negocio, segmento, cidade_uf, marketing_optin)
+                        VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version,
+                                :nome_completo, :telefone, :documento_tipo, :documento_enc, :nome_negocio, :segmento, :cidade_uf, :marketing_optin)
                         ON CONFLICT (username) DO UPDATE SET
+                            nome_completo = EXCLUDED.nome_completo,
+                            telefone = EXCLUDED.telefone,
+                            documento_tipo = EXCLUDED.documento_tipo,
+                            documento_enc = EXCLUDED.documento_enc,
+                            nome_negocio = EXCLUDED.nome_negocio,
+                            segmento = EXCLUDED.segmento,
+                            cidade_uf = EXCLUDED.cidade_uf,
+                            marketing_optin = EXCLUDED.marketing_optin,
                             email = EXCLUDED.email,
                             cpf = EXCLUDED.cpf,
                             password_hash = EXCLUDED.password_hash,
@@ -375,7 +414,15 @@ def save_users_sql(users: list, db_lock) -> bool:
                             "transacoes_processadas": tx_json,
                             "id_transacao_pagamento": u.get("id_transacao_pagamento", ""),
                             "lgpd_accepted_at": u.get("lgpd_accepted_at", ""),
-                            "lgpd_version": u.get("lgpd_version", "")
+                            "lgpd_version": u.get("lgpd_version", ""),
+                            "nome_completo": u.get("nome_completo", "") or "",
+                            "telefone": u.get("telefone", "") or "",
+                            "documento_tipo": u.get("documento_tipo", "") or "",
+                            "documento_enc": u.get("documento_enc", "") or "",
+                            "nome_negocio": u.get("nome_negocio", "") or "",
+                            "segmento": u.get("segmento", "") or "",
+                            "cidade_uf": u.get("cidade_uf", "") or "",
+                            "marketing_optin": bool(u.get("marketing_optin", False)),
                         }
                     )
 

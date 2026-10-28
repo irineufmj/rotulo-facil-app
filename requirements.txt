@@ -7,3 +7,4 @@ mercadopago
 fastapi
 uvicorn
 bcrypt
+cryptography

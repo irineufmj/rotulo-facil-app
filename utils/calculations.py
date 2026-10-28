@@ -1,6 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
 
-_MODULE_VERSION = "2026.10.23.v3"
+_MODULE_VERSION = "2026.10.28.v1"
 
 VDR = {
     "Energia (kcal)": 2000.0,
