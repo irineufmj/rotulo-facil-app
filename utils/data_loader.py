@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v4"
+_MODULE_VERSION = "2026.11.05.v5"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -938,4 +938,165 @@ def filter_and_rank_ingredients(
         return (1, is_top_or_custom, starts_with, top_rank, source_rank, pos_score, len(desc_norm))
 
     return sorted(matched, key=_search_sort_key)[:100]
+
+
+def detect_allergens_from_recipe(recipe_ingredients: list) -> dict:
+    """
+    Analisa automaticamente os ingredientes da receita e detecta Glúten, Lactose,
+    Alérgenos Diretos (CONTÉM) e Derivados (CONTÉM DERIVADOS DE) conforme RDC 727/2022 da ANVISA.
+    """
+    import unicodedata
+
+    def _norm(s: str) -> str:
+        if not s:
+            return ""
+        nfkd = unicodedata.normalize("NFKD", str(s))
+        return "".join([c for c in nfkd if not unicodedata.combining(c)]).lower()
+
+    has_gluten = False
+    has_lactose = False
+    direct_set = []
+    deriv_set = []
+    triggers = []
+
+    def _add_unique(lst, item):
+        if item not in lst:
+            lst.append(item)
+
+    plant_milks = (
+        "leite de coco", "leite de soja", "leite de amendoa", "leite de aveia",
+        "leite de arroz", "leite de castanha", "leite vegetal",
+    )
+    non_dairy_butters = (
+        "manteiga de cacau", "manteiga de amendoim", "manteiga de coco", "manteiga de karite",
+    )
+
+    for ing in (recipe_ingredients or []):
+        raw_d = str(ing.get("d", "") or "").strip()
+        d_norm = _norm(raw_d)
+        if not d_norm:
+            continue
+
+        is_gluten_free_explicit = ("sem gluten" in d_norm or "zero gluten" in d_norm)
+        is_lactose_free_explicit = ("sem lactose" in d_norm or "zero lactose" in d_norm)
+
+        # 1. Trigo, Centeio, Cevada, Aveia e Glúten
+        if any(w in d_norm for w in ("trigo", "semolina", "macarrao", "lasanha", "biscoito", "bolacha", "pao ", "torrada")):
+            if not is_gluten_free_explicit:
+                has_gluten = True
+                _add_unique(direct_set, "Trigo")
+                _add_unique(deriv_set, "Trigo")
+                triggers.append(f"Trigo / Glúten ({raw_d})")
+
+        if "aveia" in d_norm:
+            if not is_gluten_free_explicit:
+                has_gluten = True
+            _add_unique(direct_set, "Aveia")
+            _add_unique(deriv_set, "Aveia")
+            triggers.append(f"Aveia ({raw_d})")
+
+        if "centeio" in d_norm:
+            if not is_gluten_free_explicit:
+                has_gluten = True
+            _add_unique(direct_set, "Centeio")
+            triggers.append(f"Centeio ({raw_d})")
+
+        if any(w in d_norm for w in ("cevada", "malte")):
+            if not is_gluten_free_explicit:
+                has_gluten = True
+            _add_unique(direct_set, "Cevada")
+            _add_unique(deriv_set, "Cevada")
+            triggers.append(f"Cevada ({raw_d})")
+
+        # 2. Leite, Derivados Lácteos e Lactose
+        is_plant_milk = any(pm in d_norm for pm in plant_milks)
+        is_non_dairy_butter = any(nb in d_norm for nb in non_dairy_butters)
+
+        dairy_direct_markers = ("leite integral", "leite desnatado", "leite semidesnatado", "leite de vaca", "leite em po", "leite fluido")
+        dairy_deriv_markers = (
+            "leite condensado", "creme de leite", "doce de leite", "manteiga", "queijo",
+            "mucarela", "mussarela", "parmesao", "ricota", "requeijao", "iogurte",
+            "cream cheese", "soro de leite", "whey", "coalhada", "nata",
+            "chocolate ao leite", "chocolate branco", "achocolatado",
+        )
+
+        if not is_plant_milk and not is_non_dairy_butter:
+            if any(m in d_norm for m in dairy_direct_markers) or ("leite" in d_norm and not any(m in d_norm for m in dairy_deriv_markers)):
+                _add_unique(direct_set, "Leite")
+                _add_unique(deriv_set, "Leite")
+                if not is_lactose_free_explicit:
+                    has_lactose = True
+                triggers.append(f"Leite / Lactose ({raw_d})")
+            elif any(m in d_norm for m in dairy_deriv_markers):
+                _add_unique(direct_set, "Leite")
+                _add_unique(deriv_set, "Leite")
+                if not is_lactose_free_explicit:
+                    has_lactose = True
+                triggers.append(f"Derivados de Leite / Lactose ({raw_d})")
+
+        # 3. Ovos
+        if any(w in d_norm for w in ("ovo", "ovos", "gema", "clara de ovo", "clara,", "maionese", "merengue")):
+            _add_unique(direct_set, "Ovos")
+            triggers.append(f"Ovos ({raw_d})")
+
+        # 4. Soja (incluindo óleo de soja e lecitina presente em chocolates)
+        if any(w in d_norm for w in ("soja", "shoyu", "tofu", "lecitina")):
+            if "oleo de soja" in d_norm or "lecitina" in d_norm:
+                _add_unique(deriv_set, "Soja")
+            else:
+                _add_unique(direct_set, "Soja")
+                _add_unique(deriv_set, "Soja")
+            triggers.append(f"Soja ({raw_d})")
+        elif "chocolate" in d_norm and "cacau 100%" not in d_norm:
+            _add_unique(deriv_set, "Soja")
+            triggers.append(f"Derivados de Soja / Lecitina ({raw_d})")
+
+        # 5. Oleaginosas e Castanhas
+        if any(w in d_norm for w in ("amendoim", "pacoca", "pe de moleque")):
+            _add_unique(direct_set, "Amendoim")
+            triggers.append(f"Amendoim ({raw_d})")
+        if "amendoa" in d_norm:
+            _add_unique(direct_set, "Amêndoa")
+            triggers.append(f"Amêndoa ({raw_d})")
+        if any(w in d_norm for w in ("avela", "nutella")):
+            _add_unique(direct_set, "Avelãs")
+            triggers.append(f"Avelãs ({raw_d})")
+        if "castanha de caju" in d_norm or "castanha-de-caju" in d_norm or "caju, castanha" in d_norm:
+            _add_unique(direct_set, "Castanha-de-caju")
+            triggers.append(f"Castanha-de-caju ({raw_d})")
+        if any(w in d_norm for w in ("castanha do para", "castanha-do-para", "castanha do brasil", "castanha-do-brasil")):
+            _add_unique(direct_set, "Castanha-do-pará")
+            triggers.append(f"Castanha-do-pará ({raw_d})")
+        if "macadamia" in d_norm:
+            _add_unique(direct_set, "Macadâmias")
+            triggers.append(f"Macadâmias ({raw_d})")
+        if "pistache" in d_norm:
+            _add_unique(direct_set, "Pistaches")
+            triggers.append(f"Pistaches ({raw_d})")
+        if "peca" in d_norm and ("noz" in d_norm or "pecas" in d_norm):
+            _add_unique(direct_set, "Pecãs")
+            triggers.append(f"Pecãs ({raw_d})")
+        elif any(w in d_norm for w in ("nozes", "noz,", "noz ")):
+            _add_unique(direct_set, "Nozes")
+            triggers.append(f"Nozes ({raw_d})")
+        if "pinoli" in d_norm:
+            _add_unique(direct_set, "Pinoli")
+            triggers.append(f"Pinoli ({raw_d})")
+
+        # 6. Peixes e Crustáceos
+        if any(w in d_norm for w in ("peixe", "tilapia", "pescada", "salmao", "atum", "bacalhau", "sardinha", "merluza", "cacao", "corvina")):
+            _add_unique(direct_set, "Peixes")
+            triggers.append(f"Peixes ({raw_d})")
+        if any(w in d_norm for w in ("camarao", "lagosta", "siri", "caranguejo", "crustaceo")):
+            _add_unique(direct_set, "Crustáceos")
+            triggers.append(f"Crustáceos ({raw_d})")
+
+    return {
+        "gluten_opt": "CONTÉM GLÚTEN" if has_gluten else "NÃO CONTÉM GLÚTEN",
+        "lactose_opt": "CONTÉM LACTOSE" if has_lactose else "NÃO CONTÉM LACTOSE",
+        "allergens_direct": direct_set,
+        "allergens_deriv": deriv_set,
+        "reasons": triggers,
+    }
+
 

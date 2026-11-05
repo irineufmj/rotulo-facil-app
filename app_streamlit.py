@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import urllib.parse
 import pandas as pd
 import io
 import math
@@ -18,11 +19,11 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.05.v4"
+_EXPECTED_UTILS_VERSION = "2026.11.05.v5"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "save_custom_ingredient_sql"),
-    (_mod_data_loader, "save_custom_ingredient"),
+    (_mod_data_loader, "detect_allergens_from_recipe"),
     (_mod_auth, "register_customer"),
     (_mod_calculations, "calculate_monthly_sales_goal"),
     (_mod_ui, "inject_custom_css"),
@@ -43,7 +44,7 @@ from utils.auth import (
 from utils.data_loader import (
     load_unified_data, load_saved_recipes, save_recipe, delete_recipe,
     get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
-    get_custom_ingredients_list, save_custom_ingredient,
+    get_custom_ingredients_list, save_custom_ingredient, detect_allergens_from_recipe,
     TOP_CONFECTIONERY_MAP, filter_and_rank_ingredients, format_ingredient_option_label,
 )
 try:
@@ -1069,6 +1070,26 @@ with st.sidebar:
         st.toast("Você saiu da conta.")
         st.rerun()
 
+# --- BARRA DE NAVEGAÇÃO RÁPIDA NO TOPO (ESSENCIAL PARA CELULAR / MOBILE) ---
+_top_creds_label = "∞ Admin" if st.session_state.get("is_admin", False) else f"{(current_user_side.get('creditos_disponiveis', 0) if current_user_side else 0)} créd."
+_top_nav_items = [
+    ("🧮 Calculadora", "Ficha Técnica & Precificação"),
+    ("🏷️ Rótulo ANVISA", "Tabela Nutricional & ANVISA"),
+    ("📂 Minhas Fichas", "Minhas Fichas Técnicas"),
+    (f"👤 Perfil ({_top_creds_label})", "Meu Perfil"),
+]
+_t_cols = st.columns(len(_top_nav_items))
+for _idx_nav, (_lbl_nav, _page_target) in enumerate(_top_nav_items):
+    _is_cur_page = (st.session_state.selected_page == _page_target)
+    if _t_cols[_idx_nav].button(
+        _lbl_nav,
+        type="primary" if _is_cur_page else "secondary",
+        use_container_width=True,
+        key=f"top_quick_nav_{_idx_nav}"
+    ):
+        st.session_state.selected_page = _page_target
+        st.rerun()
+
 # --- SUCESSO NO PAGAMENTO MERCADO PAGO ---
 if st.query_params.get("status") == "approved":
     st.success("🎉 **Pagamento Aprovado com Sucesso!** Seus créditos foram adicionados à sua conta.")
@@ -1281,6 +1302,11 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
             if st.session_state.yield_units > 0:
                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
+            _auto_al = detect_allergens_from_recipe(st.session_state.recipe)
+            st.session_state.gluten_opt = _auto_al["gluten_opt"]
+            st.session_state.lactose_opt = _auto_al["lactose_opt"]
+            st.session_state.allergens_direct = _auto_al["allergens_direct"]
+            st.session_state.allergens_deriv = _auto_al["allergens_deriv"]
             st.toast(f"'{friendly_name}' adicionado à sua receita!")
             st.rerun()
 
@@ -1347,6 +1373,11 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                             st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
                             if st.session_state.yield_units > 0:
                                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
+                            _auto_al = detect_allergens_from_recipe(st.session_state.recipe)
+                            st.session_state.gluten_opt = _auto_al["gluten_opt"]
+                            st.session_state.lactose_opt = _auto_al["lactose_opt"]
+                            st.session_state.allergens_direct = _auto_al["allergens_direct"]
+                            st.session_state.allergens_deriv = _auto_al["allergens_deriv"]
                             st.toast(f"✅ '{new_food_obj['d']}' cadastrado e adicionado à sua receita!")
                         else:
                             st.toast(f"💾 '{new_food_obj['d']}' salvo na sua lista de produtos!")
@@ -1696,6 +1727,26 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 st.session_state.wizard_step = 2
                 st.rerun()
 
+            # --- PACOTE 4: PONTE DIRETA DO PASSO 3 PARA O RÓTULO OFICIAL ANVISA ---
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #f0fdfa 0%, #e0f2fe 100%); border: 1.5px solid #00a896; border-radius: 14px; padding: 14px 18px; margin: 14px 0 8px 0;">
+                <p style="margin: 0 0 4px 0; font-weight: 800; color: #0b3b4c; font-size: 1.0rem;">🏷️ Vai vender em mercados, padarias, empórios ou delivery?</p>
+                <p style="margin: 0; font-size: 0.88rem; color: #374151;">
+                    Gere em 1 clique a <strong>Tabela Nutricional Oficial ANVISA (RDC 429 / IN 75)</strong> com cálculo automático de Lupas Frontais, Glúten, Lactose e Alérgenos da sua receita!
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("🏷️ Gerar Rótulo Oficial ANVISA desta Receita ➡️", type="secondary", use_container_width=True, key="btn_bridge_step3_to_anvisa"):
+                _det_bridge = detect_allergens_from_recipe(st.session_state.recipe)
+                st.session_state.gluten_opt = _det_bridge["gluten_opt"]
+                st.session_state.lactose_opt = _det_bridge["lactose_opt"]
+                st.session_state.allergens_direct = _det_bridge["allergens_direct"]
+                st.session_state.allergens_deriv = _det_bridge["allergens_deriv"]
+                for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget"):
+                    st.session_state.pop(_wk, None)
+                st.session_state.selected_page = "Tabela Nutricional & ANVISA"
+                st.rerun()
+
             st.markdown("---")
             st.markdown("##### 🛠️ Ferramentas Extras (Opcional)")
 
@@ -1812,7 +1863,41 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     key="anvisa_case_measure_widget"
                 )
                 
-                st.markdown("##### 🏷️ Declarações Obrigatórias e Alérgenos")
+                st.markdown("##### 🏷️ Declarações Obrigatórias e Alérgenos (RDC 727/2022)")
+                _auto_detected = detect_allergens_from_recipe(st.session_state.recipe)
+
+                # Se a sessão ainda está totalmente vazia de alérgenos mas a receita possui alérgenos óbvios, pré-preencher automaticamente
+                if (
+                    not st.session_state.allergens_direct
+                    and not st.session_state.allergens_deriv
+                    and st.session_state.gluten_opt == "NÃO CONTÉM GLÚTEN"
+                    and st.session_state.lactose_opt == "NÃO CONTÉM LACTOSE"
+                    and _auto_detected["reasons"]
+                ):
+                    st.session_state.gluten_opt = _auto_detected["gluten_opt"]
+                    st.session_state.lactose_opt = _auto_detected["lactose_opt"]
+                    st.session_state.allergens_direct = list(_auto_detected["allergens_direct"])
+                    st.session_state.allergens_deriv = list(_auto_detected["allergens_deriv"])
+
+                if _auto_detected["reasons"]:
+                    _resumo_det = " • ".join(_auto_detected["reasons"][:6])
+                    st.markdown(
+                        f"<div style='background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:10px 12px; margin-bottom:10px; font-size:0.84rem; color:#166534;'>"
+                        f"🪄 <strong>Detecção Automática pelos Ingredientes:</strong> {_resumo_det}<br>"
+                        f"<span style='color:#374151;'>Já pré-marcamos abaixo para sua segurança (você pode ajustar caso use ingrediente zero lactose ou sem glúten).</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                    if st.button("🪄 Reaplicar Detecção Automática de Alérgenos da Receita", type="secondary", use_container_width=True, key="btn_reapply_auto_allergens"):
+                        st.session_state.gluten_opt = _auto_detected["gluten_opt"]
+                        st.session_state.lactose_opt = _auto_detected["lactose_opt"]
+                        st.session_state.allergens_direct = list(_auto_detected["allergens_direct"])
+                        st.session_state.allergens_deriv = list(_auto_detected["allergens_deriv"])
+                        for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget"):
+                            st.session_state.pop(_wk, None)
+                        st.toast("Alérgenos, glúten e lactose sincronizados com os ingredientes da receita!")
+                        st.rerun()
+
                 col_dec1, col_dec2 = st.columns(2)
                 
                 gluten_options = ["NÃO CONTÉM GLÚTEN", "CONTÉM GLÚTEN"]
@@ -1828,9 +1913,12 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     "Amendoim", "Soja", "Leite", "Amêndoa", "Avelãs", "Castanha-de-caju", 
                     "Castanha-do-pará", "Macadâmias", "Nozes", "Pecãs", "Pistaches", "Pinoli"
                 ]
-                selected_allergens_direct = st.multiselect("1. CONTÉM (Ingredientes alérgenos diretos):", options=allergens_list, default=st.session_state.allergens_direct, key="anvisa_allergens_direct_widget")
-                selected_allergens_deriv = st.multiselect("2. CONTÉM DERIVADOS DE:", options=allergens_list, default=st.session_state.allergens_deriv, key="anvisa_allergens_deriv_widget")
-                selected_allergens_may_contain = st.multiselect("3. PODE CONTER (Cruzada/traços):", options=allergens_list, default=st.session_state.allergens_may_contain, key="anvisa_allergens_may_contain_widget")
+                _valid_direct = [a for a in st.session_state.allergens_direct if a in allergens_list]
+                _valid_deriv = [a for a in st.session_state.allergens_deriv if a in allergens_list]
+                _valid_may = [a for a in st.session_state.allergens_may_contain if a in allergens_list]
+                selected_allergens_direct = st.multiselect("1. CONTÉM (Ingredientes alérgenos diretos):", options=allergens_list, default=_valid_direct, key="anvisa_allergens_direct_widget")
+                selected_allergens_deriv = st.multiselect("2. CONTÉM DERIVADOS DE:", options=allergens_list, default=_valid_deriv, key="anvisa_allergens_deriv_widget")
+                selected_allergens_may_contain = st.multiselect("3. PODE CONTER (Cruzada/traços):", options=allergens_list, default=_valid_may, key="anvisa_allergens_may_contain_widget")
                 
                 if st.button("⚡ Atualizar Tabela & Lupas ANVISA", type="primary", use_container_width=True):
                     st.session_state.weight_final = weight_final
@@ -2180,9 +2268,79 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
             st.rerun()
     else:
         recipes_dict = {r["nome"]: r for r in saved_recipes}
-        
+
+        # --- PACOTE 5: VISÃO GERAL DO CARDÁPIO (COMPARATIVO DE TODAS AS RECEITAS SALVAS) ---
+        st.markdown("#### 📊 Visão Geral do Seu Cardápio (Comparativo de Custos e Lucros)")
+        menu_rows = []
+        margins_list = []
+        best_prod_name = "-"
+        best_prod_margin = -999.0
+        low_margin_prods = []
+
+        for _r_item in saved_recipes:
+            _r_name = _r_item.get("nome", "Sem Nome")
+            _ings = _r_item.get("ingredients", []) or []
+            _sum_w = sum(float(i.get("w", 0.0) or 0.0) for i in _ings)
+            _w_fin = float(_r_item.get("weight_final", 0.0) or 0.0) or _sum_w or 1.0
+            _p_emb = float(_r_item.get("peso_embalagem", 0.0) or 0.0)
+            _ref_w = _p_emb if _p_emb > 0 else _w_fin
+            _units = max(1.0, _w_fin / _ref_w) if _ref_w > 0 else 1.0
+            _fb_m = calculate_financial_breakdown(
+                recipe_ingredients=_ings,
+                packaging_cost=float(_r_item.get("custo_embalagem", 0.0) or 0.0),
+                prep_time_min=float(_r_item.get("tempo_preparo_min", 0.0) or 0.0),
+                hourly_rate=float(_r_item.get("custo_hora_mao_obra", 0.0) or 0.0),
+                overhead_pct=float(_r_item.get("custo_operacional_pct", 0.0) or 0.0),
+                target_margin_pct=float(_r_item.get("margem_desejada_pct", 30.0) or 30.0),
+                sales_fees_pct=float(_r_item.get("taxas_venda_pct", 0.0) or 0.0),
+                num_units=_units,
+                practiced_price=float(_r_item.get("preco_venda_praticado", 0.0) or 0.0),
+            )
+            _m_pct = float(_fb_m["prac_net_margin_pct"])
+            _net_p = float(_fb_m["prac_net_profit"])
+            margins_list.append(_m_pct)
+            if _m_pct > best_prod_margin:
+                best_prod_margin = _m_pct
+                best_prod_name = _r_name
+            if _net_p <= 0:
+                _status_lbl = "🚨 Prejuízo"
+                low_margin_prods.append(_r_name)
+            elif _m_pct < 20.0:
+                _status_lbl = "⚠️ Margem Baixa (<20%)"
+                low_margin_prods.append(_r_name)
+            else:
+                _status_lbl = "✅ Lucro Saudável"
+
+            menu_rows.append({
+                "Produto / Receita": _r_name,
+                "Rendimento": f"{_units:.0f} un ({_ref_w:.0f}g)",
+                "Custo Total / un": f"R$ {_fb_m['unit_total_cost']:.2f}",
+                "Preço Praticado": f"R$ {_fb_m['prac_unit_price']:.2f}",
+                "Preço Sugerido": f"R$ {_fb_m['suggested_unit_price']:.2f}",
+                "Lucro Livre / un": f"R$ {_net_p:.2f}",
+                "Margem Livre (%)": f"{_m_pct:.0f}%",
+                "Diagnóstico": _status_lbl,
+            })
+
+        avg_margin_menu = (sum(margins_list) / len(margins_list)) if margins_list else 0.0
+        mk1, mk2, mk3, mk4 = st.columns(4)
+        mk1.metric("Produtos no Cardápio", f"{len(saved_recipes)}")
+        mk2.metric("Margem Média Livre", f"{avg_margin_menu:.0f}%")
+        mk3.metric("Campeão de Margem", f"{best_prod_name[:18]} ({best_prod_margin:.0f}%)")
+        mk4.metric("Alerta de Preço", f"{len(low_margin_prods)} produto(s)" if low_margin_prods else "✅ Todos Saudáveis")
+
+        if low_margin_prods:
+            st.warning(
+                f"⚠️ **Atenção ao preço:** {', '.join(low_margin_prods)} está(ão) com margem abaixo de 20% ou no prejuízo. "
+                "Selecione a ficha abaixo e clique em **🔌 Abrir na Calculadora de Preço** para reajustar!"
+            )
+
+        st.dataframe(pd.DataFrame(menu_rows), use_container_width=True, hide_index=True)
+        st.markdown("---")
+        st.markdown("#### 🔍 Detalhes e Ações por Ficha Técnica")
+
         selected_name = st.selectbox(
-            "Selecione uma ficha técnica para visualizar ou carregar:",
+            "Selecione uma ficha técnica para visualizar, compartilhar ou carregar:",
             options=list(recipes_dict.keys()),
             key="saved_recipes_select"
         )
@@ -2192,12 +2350,14 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
             st.caption(f"📅 Última atualização: `{recipe.get('date_saved', 'N/A')}`")
             
             # Calcular resumo financeiro da receita salva
-            r_w_final = float(recipe.get("weight_final", 1.0) or 1.0)
+            r_ings = recipe.get("ingredients", []) or []
+            r_sum_w = sum(float(i.get("w", 0.0) or 0.0) for i in r_ings)
+            r_w_final = float(recipe.get("weight_final", 0.0) or 0.0) or r_sum_w or 1.0
             r_p_emb = float(recipe.get("peso_embalagem", 0.0) or 0.0)
             r_ref_w = r_p_emb if r_p_emb > 0 else r_w_final
             r_units = max(1.0, r_w_final / r_ref_w) if r_ref_w > 0 else 1.0
             r_fb = calculate_financial_breakdown(
-                recipe_ingredients=recipe.get("ingredients", []),
+                recipe_ingredients=r_ings,
                 packaging_cost=float(recipe.get("custo_embalagem", 0.0) or 0.0),
                 prep_time_min=float(recipe.get("tempo_preparo_min", 0.0) or 0.0),
                 hourly_rate=float(recipe.get("custo_hora_mao_obra", 0.0) or 0.0),
@@ -2215,7 +2375,7 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
             sc4.metric("Lucro Livre / un", f"R$ {r_fb['prac_net_profit']:.2f} ({r_fb['prac_net_margin_pct']:.0f}%)")
 
             ing_details = []
-            for ing in recipe["ingredients"]:
+            for ing in r_ings:
                 yf_saved = float(ing.get("yield_factor", 1.0) or 1.0)
                 c_kg_saved = float(ing.get("cost_kg", 0.0) or 0.0)
                 c_item = calculate_ingredient_cost(float(ing["w"]), c_kg_saved, yf_saved)
@@ -2229,7 +2389,7 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
             st.markdown("##### 🛒 Ingredientes da Ficha Técnica:")
             st.table(pd.DataFrame(ing_details))
             
-            def _load_recipe_into_session(rec_obj, as_copy=False):
+            def _load_recipe_into_session(rec_obj, as_copy=False, target_page="Ficha Técnica & Precificação"):
                 st.session_state.recipe = [i.copy() for i in rec_obj["ingredients"]]
                 st.session_state.weight_final = float(rec_obj.get("weight_final", 100.0) or 100.0)
                 st.session_state.portion_size = float(rec_obj.get("portion_size", 60.0) or 60.0)
@@ -2255,12 +2415,12 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
                     st.session_state.yield_units = max(1, int(round(st.session_state.weight_final / st.session_state.peso_embalagem)))
                 st.session_state.calculated = True
                 st.session_state.wizard_step = 1 if as_copy else 3
-                st.session_state.selected_page = "Ficha Técnica & Precificação"
+                st.session_state.selected_page = target_page
 
             st.markdown("---")
             saved_ft_pdf = build_ficha_tecnica_pdf_bytes(
                 prod_name=recipe.get("nome_produto", "") or selected_name,
-                recipe_ingredients=recipe.get("ingredients", []),
+                recipe_ingredients=r_ings,
                 fb=r_fb,
                 num_units=r_units,
                 unit_weight_g=r_ref_w,
@@ -2270,33 +2430,62 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
                 sales_fees_pct=float(recipe.get("taxas_venda_pct", 0.0) or 0.0)
             )
             safe_sv_fname = "".join(c if c.isalnum() else "_" for c in selected_name).strip("_").lower() or "ficha_tecnica"
-            st.download_button(
-                label=f"📄 Baixar PDF da Ficha Técnica '{selected_name}' (Cozinha & Custos)",
-                data=saved_ft_pdf,
-                file_name=f"ficha_tecnica_{safe_sv_fname}.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-                key="btn_dl_saved_ft_pdf"
-            )
 
-            col_load, col_clone, col_del = st.columns(3)
+            # Texto de compartilhamento rápido para WhatsApp (ficha de compras / orçamento)
+            _wa_ing_lines = "\n".join([f"• {i['d']}: {float(i['w']):.0f}g" for i in r_ings])
+            _wa_summary_text = (
+                f"📋 *Ficha Técnica: {selected_name}*\n"
+                f"⚖️ Rendimento: {r_units:.0f} un ({r_ref_w:.0f}g/un | Lote: {r_w_final:.0f}g)\n"
+                f"💰 Custo por un.: R$ {r_fb['unit_total_cost']:.2f} (Lote: R$ {r_fb['total_production_cost']:.2f})\n"
+                f"🏷️ Preço de Venda: R$ {r_fb['prac_unit_price']:.2f}/un (Lucro livre: R$ {r_fb['prac_net_profit']:.2f}/un • {r_fb['prac_net_margin_pct']:.0f}%)\n\n"
+                f"🛒 *Lista de Ingredientes:*\n{_wa_ing_lines}"
+            )
+            _wa_url = f"https://wa.me/?text={urllib.parse.quote(_wa_summary_text)}"
+
+            c_dl_pdf, c_wa_share = st.columns(2)
+            with c_dl_pdf:
+                st.download_button(
+                    label=f"📄 Baixar PDF da Ficha '{selected_name}'",
+                    data=saved_ft_pdf,
+                    file_name=f"ficha_tecnica_{safe_sv_fname}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_dl_saved_ft_pdf"
+                )
+            with c_wa_share:
+                st.link_button(
+                    "📲 Enviar Ficha / Lista de Compras no WhatsApp",
+                    _wa_url,
+                    use_container_width=True
+                )
+
+            with st.expander("📋 Copiar resumo em texto (para colar no WhatsApp ou Bloco de Notas)"):
+                st.code(_wa_summary_text, language=None)
+
+            col_load, col_anvisa, col_clone, col_del = st.columns(4)
             
             with col_load:
-                if st.button("🔌 Abrir na Calculadora de Preço", type="primary", use_container_width=True):
-                    _load_recipe_into_session(recipe, as_copy=False)
+                if st.button("🔌 Abrir na Calculadora", type="primary", use_container_width=True):
+                    _load_recipe_into_session(recipe, as_copy=False, target_page="Ficha Técnica & Precificação")
                     st.toast(f"Ficha Técnica **{selected_name}** carregada!")
                     st.rerun()
 
+            with col_anvisa:
+                if st.button("🏷️ Gerar Rótulo ANVISA", type="secondary", use_container_width=True):
+                    _load_recipe_into_session(recipe, as_copy=False, target_page="Tabela Nutricional & ANVISA")
+                    st.toast(f"Ficha **{selected_name}** carregada no Gerador ANVISA!")
+                    st.rerun()
+
             with col_clone:
-                if st.button("📄 Duplicar Receita (Criar Cópia)", type="secondary", use_container_width=True):
-                    _load_recipe_into_session(recipe, as_copy=True)
+                if st.button("📄 Duplicar Receita", type="secondary", use_container_width=True):
+                    _load_recipe_into_session(recipe, as_copy=True, target_page="Ficha Técnica & Precificação")
                     st.toast("Cópia da ficha técnica pronta para edição!")
                     st.rerun()
 
             with col_del:
                 st.markdown('<div class="danger-button-wrapper"></div>', unsafe_allow_html=True)
-                if st.button("🗑️ Excluir Permanentemente", type="secondary", use_container_width=True):
+                if st.button("🗑️ Excluir Ficha", type="secondary", use_container_width=True):
                     if delete_recipe(selected_name, db_lock):
                         st.toast(f"Ficha Técnica **{selected_name}** excluída com sucesso!")
                         st.rerun()

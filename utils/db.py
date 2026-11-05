@@ -8,7 +8,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v4"
+_MODULE_VERSION = "2026.11.05.v5"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
