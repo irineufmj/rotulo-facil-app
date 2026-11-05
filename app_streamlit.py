@@ -18,7 +18,7 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.10.28.v1"
+_EXPECTED_UTILS_VERSION = "2026.11.05.v1"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "consume_user_credit_sql"),
@@ -793,7 +793,7 @@ if not st.session_state.logged_in:
         with tab_login:
             st.markdown('<h4 style="margin-top: 15px; margin-bottom: 15px; color: #0b3b4c; text-align: center;">Entrar no Sistema</h4>', unsafe_allow_html=True)
             with st.form("form_login_usuario"):
-                login_user = st.text_input("E-mail ou CPF/CNPJ:", placeholder="Digite seu e-mail ou CPF/CNPJ", key="login_username_field")
+                login_user = st.text_input("Usuário, E-mail ou CPF/CNPJ:", placeholder="Digite seu usuário, e-mail ou CPF/CNPJ", key="login_username_field")
                 login_pass = st.text_input("Senha:", type="password", placeholder="Digite sua senha", key="login_password_field")
                 
                 submit_login = st.form_submit_button("Acessar Painel", type="primary", use_container_width=True)
@@ -933,7 +933,8 @@ if st.session_state.get("needs_profile", False):
             "**Suas receitas e créditos continuam salvos.**"
         )
         with st.container(border=True):
-            cp_nome = st.text_input("Nome completo*:", value=_me.get("nome_completo", ""), placeholder="Ex: Márcia Aparecida Souza", key="cp_nome")
+            _default_nome = _me.get("nome_completo") or _me.get("username", "")
+            cp_nome = st.text_input("Nome completo*:", value=_default_nome, placeholder="Ex: Márcia Aparecida Souza", key="cp_nome")
             cp_email = st.text_input("E-mail*:", value=_me.get("email", ""), key="cp_email")
             cp_doc_tipo, cp_doc = render_document_input("cp", default_tipo=_me.get("documento_tipo") or "CPF")
             cp_phone = render_phone_input("cp", default_value=_me.get("telefone", ""))
@@ -951,7 +952,7 @@ if st.session_state.get("needs_profile", False):
                         st.session_state.username, cp_nome, cp_email, telefone=cp_phone,
                         nome_negocio=cp_negocio, segmento=cp_segmento, cidade_uf=cp_cidade,
                         documento_tipo=cp_doc_tipo, documento=cp_doc, lgpd_accepted=True,
-                        marketing_optin=cp_mkt, require_document=True, db_lock=db_lock,
+                        marketing_optin=cp_mkt, require_document=not bool(_me.get("cpf")), db_lock=db_lock,
                     )
                     if ok_cp:
                         st.session_state.needs_profile = False
@@ -960,7 +961,11 @@ if st.session_state.get("needs_profile", False):
                         st.rerun()
                     else:
                         st.error(msg_cp)
-        if st.button("Sair da conta", key="cp_logout"):
+        _btn_c1, _btn_c2 = st.columns(2)
+        if _btn_c1.button("⏭️ Pular por enquanto", use_container_width=True, key="cp_skip"):
+            st.session_state.needs_profile = False
+            st.rerun()
+        if _btn_c2.button("Sair da conta", use_container_width=True, key="cp_logout"):
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.session_state.is_admin = False
@@ -2453,6 +2458,16 @@ if is_admin:
         st.markdown("### Painel do Administrador")
         st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
         
+        from utils.db import is_sql_configured
+        if is_sql_configured():
+            st.caption("🟢 **Banco de Dados em Nuvem Ativo (PostgreSQL Neon)** — cadastros e receitas sincronizados de forma permanente.")
+        else:
+            st.warning(
+                "🟠 **Modo Local Temporário (`usuarios.json`)** — O aplicativo não encontrou a variável `[connections.sql]` "
+                "no **Streamlit Cloud Secrets**. Sem ela, o container usa um arquivo temporário que mostra apenas o `admin` "
+                "após atualizações. Configure `[connections.sql]` nas configurações (*Settings → Secrets*) do Streamlit Cloud."
+            )
+
         users = load_users(db_lock)
         
         # Formatar CPF para exibição
@@ -2473,7 +2488,7 @@ if is_admin:
         for u in users:
             users_display.append({
                 "Usuário": u["username"],
-                "Nome": u.get("nome_completo", "") or "—",
+                "Nome": u.get("nome_completo", "") or u.get("username", "") or "—",
                 "E-mail": u.get("email", "N/A"),
                 "CPF/CNPJ": format_cpf(u.get("cpf", ""), u),
                 "WhatsApp": format_phone(u.get("telefone", "")) or "—",

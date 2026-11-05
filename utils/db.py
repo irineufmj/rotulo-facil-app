@@ -8,7 +8,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.10.28.v1"
+_MODULE_VERSION = "2026.11.05.v1"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
@@ -49,10 +49,24 @@ def log_db_error(msg: str, e: Exception):
         logger.error(f"Erro ao gravar log local de erro: {log_ex}")
 
 
+# Novos dados cadastrais (v2026.10.28) — migração apenas ADITIVA (ADD COLUMN IF NOT EXISTS), nunca remove dados.
+_USER_PROFILE_COLUMNS = [
+    "nome_completo VARCHAR(255)",
+    "telefone VARCHAR(20)",
+    "documento_tipo VARCHAR(4)",
+    "documento_enc TEXT",
+    "nome_negocio VARCHAR(255)",
+    "segmento VARCHAR(100)",
+    "cidade_uf VARCHAR(120)",
+    "marketing_optin BOOLEAN DEFAULT FALSE",
+]
+
+
 def init_db_safe(engine):
     """
     Inicializa as tabelas do banco de dados relacional se ainda não inicializadas.
     Não lança exceções para fora para evitar quebras no carregamento de módulos.
+    Usa uma única transação para evitar múltiplas conexões TCP sequenciais.
     """
     global _db_initialized
     if _db_initialized:
@@ -72,15 +86,52 @@ def init_db_safe(engine):
                 transacoes_processadas TEXT, -- Salvo como String JSON
                 id_transacao_pagamento VARCHAR(255),
                 lgpd_accepted_at VARCHAR(100),
-                lgpd_version VARCHAR(10)
+                lgpd_version VARCHAR(10),
+                nome_completo VARCHAR(255),
+                telefone VARCHAR(20),
+                documento_tipo VARCHAR(4),
+                documento_enc TEXT,
+                nome_negocio VARCHAR(255),
+                segmento VARCHAR(100),
+                cidade_uf VARCHAR(120),
+                marketing_optin BOOLEAN DEFAULT FALSE
             )
             """))
             
             # Migração de coluna: Altera cpf para VARCHAR(255) caso a tabela já existisse como VARCHAR(20)
             try:
-                conn.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
+                with conn.begin_nested():
+                    conn.execute(text("ALTER TABLE usuarios ALTER COLUMN cpf TYPE VARCHAR(255)"))
             except Exception:
                 pass
+
+            # Migração aditiva de colunas de perfil para bancos já existentes (na mesma conexão)
+            for col_def in _USER_PROFILE_COLUMNS:
+                try:
+                    with conn.begin_nested():
+                        conn.execute(text(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col_def}"))
+                except Exception as col_err:
+                    logger.warning(f"[Database] Falha ao adicionar coluna '{col_def}': {col_err}")
+
+            # Backfill seguro para contas existentes: preserva nome e indicador de CPF já cadastrado
+            try:
+                with conn.begin_nested():
+                    conn.execute(text("""
+                        UPDATE usuarios
+                        SET nome_completo = username
+                        WHERE (nome_completo IS NULL OR BTRIM(nome_completo) = '')
+                          AND username IS NOT NULL
+                          AND LOWER(username) <> 'admin'
+                    """))
+                    conn.execute(text("""
+                        UPDATE usuarios
+                        SET documento_tipo = 'CPF'
+                        WHERE (documento_tipo IS NULL OR BTRIM(documento_tipo) = '')
+                          AND cpf IS NOT NULL
+                          AND BTRIM(cpf) <> ''
+                    """))
+            except Exception as bf_err:
+                logger.warning(f"[Database] Aviso no backfill de usuários legados: {bf_err}")
             
             # Tabela de Receitas
             conn.execute(text("""
@@ -122,7 +173,8 @@ def init_db_safe(engine):
                 "preco_venda_praticado FLOAT DEFAULT 0.0"
             ]:
                 try:
-                    conn.execute(text(f"ALTER TABLE receitas ADD COLUMN IF NOT EXISTS {col_def}"))
+                    with conn.begin_nested():
+                        conn.execute(text(f"ALTER TABLE receitas ADD COLUMN IF NOT EXISTS {col_def}"))
                 except Exception:
                     pass
 
@@ -146,38 +198,29 @@ def init_db_safe(engine):
         logger.error(f"[Database] Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
         log_db_error("init_db_error", e)
 
-    _migrate_user_profile_columns(engine)
 
-
-# Novos dados cadastrais (v2026.10.28) — migração apenas ADITIVA (ADD COLUMN IF NOT EXISTS), nunca remove dados.
-_USER_PROFILE_COLUMNS = [
-    "nome_completo VARCHAR(255)",
-    "telefone VARCHAR(20)",
-    "documento_tipo VARCHAR(4)",
-    "documento_enc TEXT",
-    "nome_negocio VARCHAR(255)",
-    "segmento VARCHAR(100)",
-    "cidade_uf VARCHAR(120)",
-    "marketing_optin BOOLEAN DEFAULT FALSE",
-]
-
-
-def _migrate_user_profile_columns(engine):
-    """Cada ALTER roda em transação própria para que uma falha isolada não aborte as demais."""
-    for col_def in _USER_PROFILE_COLUMNS:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col_def}"))
-        except Exception as e:
-            logger.warning(f"[Database] Falha ao adicionar coluna '{col_def}': {e}")
+def _sanitize_db_url(raw_url: str) -> str:
+    """Normaliza a URL de conexão PostgreSQL para compatibilidade com SQLAlchemy e libpq."""
+    if not raw_url:
+        return ""
+    url = str(raw_url).strip().strip('"').strip("'")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    # Remove channel_binding=require caso presente (incompatível com algumas versões de libpq no Linux)
+    if "channel_binding=" in url:
+        import re
+        url = re.sub(r'[?&]channel_binding=[^&]*', '', url)
+        if "?" not in url and "&" in url:
+            url = url.replace("&", "?", 1)
+    return url
 
 
 def get_db_engine():
     """
     Retorna ou inicializa o engine do SQLAlchemy.
     Suporta leitura a partir de:
-    1. Variável de ambiente DATABASE_URL
-    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"])
+    1. Variáveis de ambiente (DATABASE_URL, POSTGRES_URL, NEON_DATABASE_URL)
+    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"] ou chaves na raiz como DATABASE_URL / url)
     3. Construção da URL de st.secrets["connections"]["sql"] (host, username, password...)
     4. Leitura direta de .streamlit/secrets.toml (fallback local)
     """
@@ -185,14 +228,18 @@ def get_db_engine():
     if _db_engine is not None:
         return _db_engine
 
-    db_url = os.environ.get("DATABASE_URL")
+    db_url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("NEON_DATABASE_URL")
+    )
     
     if not db_url:
         try:
-            # 1. Tentar ler URL direta em st.secrets
+            # 1. Tentar ler URL em st.secrets["connections"]["sql"]
             if "connections" in st.secrets and "sql" in st.secrets["connections"]:
                 sql_secrets = st.secrets["connections"]["sql"]
-                if "url" in sql_secrets:
+                if "url" in sql_secrets and sql_secrets["url"]:
                     db_url = sql_secrets["url"]
                 else:
                     # 2. Construir URL a partir de parâmetros individuais em st.secrets
@@ -213,6 +260,28 @@ def get_db_engine():
 
     if not db_url:
         try:
+            # 2b. Tentar chaves na raiz de st.secrets (ex: DATABASE_URL, POSTGRES_URL, url)
+            for key_candidate in ("DATABASE_URL", "POSTGRES_URL", "NEON_DATABASE_URL", "SUPABASE_DB_URL", "url"):
+                val = st.secrets.get(key_candidate, "")
+                if isinstance(val, str) and val.strip():
+                    db_url = val.strip()
+                    break
+            # Varredura de segurança: procurar qualquer valor string postgresql:// em st.secrets
+            if not db_url:
+                for k, v in st.secrets.items():
+                    if isinstance(v, str) and v.strip().startswith(("postgresql://", "postgres://")):
+                        db_url = v.strip()
+                        break
+                    elif hasattr(v, "items"):
+                        for sub_k, sub_v in v.items():
+                            if isinstance(sub_v, str) and sub_v.strip().startswith(("postgresql://", "postgres://")):
+                                db_url = sub_v.strip()
+                                break
+        except Exception:
+            pass
+
+    if not db_url:
+        try:
             # 3. Fallback: Ler do secrets.toml diretamente usando expressão regular
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
@@ -220,13 +289,11 @@ def get_db_engine():
                 with open(secrets_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 
-                # Tentar achar chave url
                 import re
-                match_url = re.search(r'url\s*=\s*["\']([^"\']+)["\']', content)
+                match_url = re.search(r'(?:url|DATABASE_URL|POSTGRES_URL)\s*=\s*["\']([^"\']+)["\']', content)
                 if match_url:
                     db_url = match_url.group(1).strip()
                 else:
-                    # Tentar achar parâmetros individuais
                     def get_toml_val(key):
                         m = re.search(fr'{key}\s*=\s*["\']([^"\']+)["\']', content)
                         return m.group(1).strip() if m else ""
@@ -245,25 +312,24 @@ def get_db_engine():
         except Exception:
             pass
 
+    db_url = _sanitize_db_url(db_url)
     if db_url:
-        # PostgreSQL requer prefixo postgresql:// no SQLAlchemy 1.4+
-        if db_url.startswith("postgres://"):
-            db_url = db_url.replace("postgres://", "postgresql://", 1)
-        
         logger.info("[Database] Inicializando engine SQLAlchemy com pool de conexões otimizado...")
         try:
             _db_engine = create_engine(
                 db_url,
                 pool_pre_ping=True,
                 pool_recycle=1800,
-                pool_size=10,
-                max_overflow=20
+                pool_size=5,
+                max_overflow=10,
+                connect_args={"connect_timeout": 10},
             )
             # Inicializar tabelas de forma segura e tardia (lazy)
             init_db_safe(_db_engine)
             return _db_engine
         except Exception as e:
             logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
+            log_db_error("create_engine_error", e)
             
     return None
 

@@ -13,7 +13,7 @@ import streamlit as st
 from utils.data_loader import load_saved_recipes, safe_save_json, RECIPES_JSON_PATH
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.10.28.v1"
+_MODULE_VERSION = "2026.11.05.v1"
 
 EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
@@ -256,8 +256,8 @@ def user_needs_profile_completion(user: dict) -> bool:
     """Contas antigas sem nome completo ou sem documento (CPF/CNPJ) precisam completar o cadastro."""
     if not user or user.get("is_admin", False):
         return False
-    has_name = bool((user.get("nome_completo") or "").strip())
-    has_doc = bool(user.get("cpf")) and bool(user.get("documento_tipo"))
+    has_name = bool((user.get("nome_completo") or user.get("username") or "").strip())
+    has_doc = bool((user.get("cpf") or "").strip())
     return not (has_name and has_doc)
 
 
@@ -460,13 +460,17 @@ def load_users(db_lock):
             except Exception as mig_err:
                 logger.error(f"Erro na migração automática de usuários para SQL: {mig_err}", exc_info=True)
 
-        # Hashing de CPFs antigos no banco SQL (LGPD)
+        # Hashing de CPFs antigos no banco SQL (LGPD) e preenchimento em memória de campos legados
         migrated_cpf = False
         for u in users:
             cpf_val = u.get("cpf", "")
             if cpf_val and not is_hashed_cpf(cpf_val):
                 u["cpf"] = hash_cpf(cpf_val)
                 migrated_cpf = True
+            if not (u.get("nome_completo") or "").strip() and u.get("username", "").lower() != "admin":
+                u["nome_completo"] = u.get("username", "")
+            if not (u.get("documento_tipo") or "").strip() and u.get("cpf"):
+                u["documento_tipo"] = "CPF"
         if migrated_cpf:
             save_users_sql(users, db_lock)
 
@@ -705,14 +709,18 @@ def authenticate_user(username, password, db_lock):
         return False, "Acesso bloqueado temporariamente por excesso de tentativas falhas.", False
         
     users = load_users(db_lock)
-    # Login aceita: e-mail, CPF/CNPJ (comparado pelo hash) ou o usuário interno legado
+    # Login aceita: nome de usuário, nome completo, e-mail ou CPF/CNPJ (comparado pelo hash)
     ident_digits = only_digits(username_clean)
     ident_doc_hash = ""
     if len(ident_digits) in (11, 14) and not EMAIL_RE.match(username_clean):
         ident_doc_hash = hash_cpf(ident_digits)
+    ident_lower = username_clean.lower()
     for u in users:
         match_doc = bool(ident_doc_hash) and u.get("cpf", "") in (ident_doc_hash, ident_digits)
-        if match_doc or u["username"].lower() == username_clean.lower() or (u.get("email") and u["email"].strip().lower() == username_clean.lower()):
+        match_user = u["username"].strip().lower() == ident_lower
+        match_nome = bool(u.get("nome_completo")) and u["nome_completo"].strip().lower() == ident_lower
+        match_email = bool(u.get("email")) and u["email"].strip().lower() == ident_lower
+        if match_doc or match_user or match_nome or match_email:
             # Verifica a senha do usuário
             is_valid_pass = verify_password(u["password_hash"], password)
 
@@ -749,7 +757,7 @@ def authenticate_user(username, password, db_lock):
                 
     st.session_state.login_attempts += 1
     attempts_left = max(0, 5 - st.session_state.login_attempts)
-    return False, f"Conta não encontrada. Confira o e-mail ou CPF/CNPJ. {attempts_left} tentativa(s) restante(s).", False
+    return False, f"Conta não encontrada. Confira seu usuário, e-mail ou CPF/CNPJ. {attempts_left} tentativa(s) restante(s).", False
 
 def admin_delete_user(username_to_delete, db_lock):
     username_clean = username_to_delete.strip().lower()
@@ -765,17 +773,17 @@ def admin_delete_user(username_to_delete, db_lock):
             
         # Roteamento seguro pelo save_users() que verifica SQL/JSON
         if save_users(new_users, db_lock):
-            from utils.db import is_sql_configured
+            from utils.db import is_sql_configured, get_db_engine
             from sqlalchemy import text
             if is_sql_configured():
                 try:
-                    conn = st.connection("sql")
-                    with conn.session as session:
-                        session.execute(
-                            text("DELETE FROM receitas WHERE LOWER(username) = LOWER(:username)"),
-                            {"username": username_clean}
-                        )
-                        session.commit()
+                    engine = get_db_engine()
+                    if engine is not None:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("DELETE FROM receitas WHERE LOWER(username) = LOWER(:username)"),
+                                {"username": username_clean}
+                            )
                 except Exception as e:
                     logger.error(f"Erro ao deletar receitas do usuario deletado do banco SQL: {e}")
             else:
@@ -852,17 +860,17 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
         # Roteamento seguro pelo save_users() que verifica SQL/JSON
         if save_users(users, db_lock):
             if old_clean != new_username_clean.lower():
-                from utils.db import is_sql_configured
+                from utils.db import is_sql_configured, get_db_engine
                 from sqlalchemy import text
                 if is_sql_configured():
                     try:
-                        conn = st.connection("sql")
-                        with conn.session as session:
-                            session.execute(
-                                text("UPDATE receitas SET username = :new_username WHERE LOWER(username) = LOWER(:old_username)"),
-                                {"new_username": new_username_clean, "old_username": old_clean}
-                            )
-                            session.commit()
+                        engine = get_db_engine()
+                        if engine is not None:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("UPDATE receitas SET username = :new_username WHERE LOWER(username) = LOWER(:old_username)"),
+                                    {"new_username": new_username_clean, "old_username": old_clean}
+                                )
                     except Exception as e:
                         logger.error(f"Erro ao atualizar receitas no SQL: {e}")
                 else:
