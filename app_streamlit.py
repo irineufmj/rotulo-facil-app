@@ -1162,19 +1162,22 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 seen_codes.add(code_val)
             dynamic_foods.append(item)
 
-        # Filtro rápido opcional de origem (Todos / Só Receitas Salvas / Só Produtos Cadastrados)
-        opt_all = "🔎 Todos os Insumos (Base + Minhas Receitas)"
+        # Filtro rápido opcional de origem (Todos / Favoritos / Só Receitas Salvas / Só Produtos Cadastrados)
+        opt_all = "🔎 Todos os Insumos"
+        opt_fav = "⭐ Só Favoritos (Mais Usados)"
         opt_rec = f"🍲 Minhas Receitas Salvas ({len(sub_recipes)})"
         opt_cad = f"➕ Meus Produtos Cadastrados ({len(custom_ings)})"
         source_filter = st.radio(
             "Filtrar lista por:",
-            options=[opt_all, opt_rec, opt_cad],
+            options=[opt_all, opt_fav, opt_rec, opt_cad],
             horizontal=True,
             key="step1_source_filter",
             label_visibility="collapsed"
         )
 
-        if source_filter == opt_rec:
+        if source_filter == opt_fav:
+            cat_filter = "🏆 Só os Mais Usados na Confeitaria"
+        elif source_filter == opt_rec:
             cat_filter = "🍲 Só Minhas Receitas Salvas"
         elif source_filter == opt_cad:
             cat_filter = "➕ Só Meus Produtos Cadastrados"
