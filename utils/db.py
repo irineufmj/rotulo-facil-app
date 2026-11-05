@@ -8,11 +8,13 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v1"
+_MODULE_VERSION = "2026.11.05.v2"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
 _db_initialized = False
+_runtime_db_url = ""
+_last_db_diag = ""
 
 
 def _safe_float(val, default: float = 0.0) -> float:
@@ -215,21 +217,66 @@ def _sanitize_db_url(raw_url: str) -> str:
     return url
 
 
+def _find_pg_url_in_mapping(obj, depth: int = 0) -> str:
+    """Procura recursivamente qualquer URL postgresql:// ou postgres:// em dicts/AttrDicts (até 6 níveis)."""
+    if depth > 6 or obj is None:
+        return ""
+    if isinstance(obj, str):
+        s = obj.strip().strip('"').strip("'")
+        if s.startswith(("postgresql://", "postgres://")):
+            return s
+        return ""
+    if hasattr(obj, "items"):
+        try:
+            for _k, v in obj.items():
+                found = _find_pg_url_in_mapping(v, depth + 1)
+                if found:
+                    return found
+        except Exception:
+            pass
+    return ""
+
+
+def _candidate_secrets_paths() -> list:
+    """Retorna todos os caminhos possíveis de secrets.toml (incluindo os do Streamlit Cloud)."""
+    paths = []
+    try:
+        from streamlit import config as _st_config
+        cfg_files = _st_config.get_option("secrets.files") or []
+        for p in cfg_files:
+            if p and p not in paths:
+                paths.append(p)
+    except Exception:
+        pass
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for extra in (
+        os.path.join(base_dir, ".streamlit", "secrets.toml"),
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.getcwd(), ".streamlit", "secrets.toml"),
+        "/mount/src/rotulo-facil-app/.streamlit/secrets.toml",
+        "/home/appuser/.streamlit/secrets.toml",
+    ):
+        if extra not in paths:
+            paths.append(extra)
+    return paths
+
+
 def get_db_engine():
     """
     Retorna ou inicializa o engine do SQLAlchemy.
     Suporta leitura a partir de:
-    1. Variáveis de ambiente (DATABASE_URL, POSTGRES_URL, NEON_DATABASE_URL)
-    2. Streamlit Secrets (st.secrets["connections"]["sql"]["url"] ou chaves na raiz como DATABASE_URL / url)
-    3. Construção da URL de st.secrets["connections"]["sql"] (host, username, password...)
-    4. Leitura direta de .streamlit/secrets.toml (fallback local)
+    1. URL definida em tempo de execução (_runtime_db_url) ou variáveis de ambiente
+    2. Streamlit Secrets (qualquer nível: [connections.sql], DATABASE_URL, etc.)
+    3. Leitura direta de todos os arquivos secrets.toml possíveis (mesmo se houver erro de sintaxe TOML)
     """
-    global _db_engine
+    global _db_engine, _last_db_diag
     if _db_engine is not None:
         return _db_engine
 
+    diag_notes = []
     db_url = (
-        os.environ.get("DATABASE_URL")
+        _runtime_db_url
+        or os.environ.get("DATABASE_URL")
         or os.environ.get("POSTGRES_URL")
         or os.environ.get("NEON_DATABASE_URL")
     )
@@ -239,78 +286,64 @@ def get_db_engine():
             # 1. Tentar ler URL em st.secrets["connections"]["sql"]
             if "connections" in st.secrets and "sql" in st.secrets["connections"]:
                 sql_secrets = st.secrets["connections"]["sql"]
-                if "url" in sql_secrets and sql_secrets["url"]:
-                    db_url = sql_secrets["url"]
-                else:
-                    # 2. Construir URL a partir de parâmetros individuais em st.secrets
-                    dialect = sql_secrets.get("dialect", "postgresql")
-                    username = sql_secrets.get("username", "")
-                    password = sql_secrets.get("password", "")
-                    host = sql_secrets.get("host", "")
-                    port = sql_secrets.get("port", "5432")
-                    database = sql_secrets.get("database", "")
-                    
-                    safe_username = urllib.parse.quote_plus(str(username)) if username else ""
-                    safe_password = urllib.parse.quote_plus(str(password)) if password else ""
-                    
-                    if host and database:
-                        db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
-        except Exception:
-            pass
-
-    if not db_url:
-        try:
-            # 2b. Tentar chaves na raiz de st.secrets (ex: DATABASE_URL, POSTGRES_URL, url)
-            for key_candidate in ("DATABASE_URL", "POSTGRES_URL", "NEON_DATABASE_URL", "SUPABASE_DB_URL", "url"):
-                val = st.secrets.get(key_candidate, "")
-                if isinstance(val, str) and val.strip():
-                    db_url = val.strip()
-                    break
-            # Varredura de segurança: procurar qualquer valor string postgresql:// em st.secrets
-            if not db_url:
-                for k, v in st.secrets.items():
-                    if isinstance(v, str) and v.strip().startswith(("postgresql://", "postgres://")):
-                        db_url = v.strip()
-                        break
-                    elif hasattr(v, "items"):
-                        for sub_k, sub_v in v.items():
-                            if isinstance(sub_v, str) and sub_v.strip().startswith(("postgresql://", "postgres://")):
-                                db_url = sub_v.strip()
-                                break
-        except Exception:
-            pass
-
-    if not db_url:
-        try:
-            # 3. Fallback: Ler do secrets.toml diretamente usando expressão regular
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            secrets_path = os.path.join(base_dir, ".streamlit", "secrets.toml")
-            if os.path.exists(secrets_path):
-                with open(secrets_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                
-                import re
-                match_url = re.search(r'(?:url|DATABASE_URL|POSTGRES_URL)\s*=\s*["\']([^"\']+)["\']', content)
-                if match_url:
-                    db_url = match_url.group(1).strip()
-                else:
-                    def get_toml_val(key):
-                        m = re.search(fr'{key}\s*=\s*["\']([^"\']+)["\']', content)
-                        return m.group(1).strip() if m else ""
-                    
-                    host = get_toml_val("host")
-                    database = get_toml_val("database")
-                    if host and database:
-                        dialect = get_toml_val("dialect") or "postgresql"
-                        username = get_toml_val("username")
-                        password = get_toml_val("password")
-                        port = get_toml_val("port") or "5432"
+                if isinstance(sql_secrets, str) and sql_secrets.strip():
+                    db_url = sql_secrets.strip()
+                elif hasattr(sql_secrets, "get"):
+                    if sql_secrets.get("url"):
+                        db_url = str(sql_secrets["url"]).strip()
+                    else:
+                        dialect = sql_secrets.get("dialect", "postgresql")
+                        username = sql_secrets.get("username", "")
+                        password = sql_secrets.get("password", "")
+                        host = sql_secrets.get("host", "")
+                        port = sql_secrets.get("port", "5432")
+                        database = sql_secrets.get("database", "")
                         
                         safe_username = urllib.parse.quote_plus(str(username)) if username else ""
                         safe_password = urllib.parse.quote_plus(str(password)) if password else ""
-                        db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
-        except Exception:
-            pass
+                        
+                        if host and database:
+                            db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
+                        else:
+                            diag_notes.append(
+                                "A seção `[connections.sql]` foi encontrada nos Secrets, mas está vazia (faltou a linha `url = \"postgresql://...\"` logo abaixo dela)."
+                            )
+        except Exception as e_sec1:
+            diag_notes.append(f"Aviso ao ler `[connections.sql]` em `st.secrets`: {e_sec1}")
+
+    if not db_url:
+        try:
+            # 2. Busca recursiva em qualquer chave/nível de st.secrets
+            db_url = _find_pg_url_in_mapping(st.secrets)
+            if not db_url:
+                top_keys = list(st.secrets.keys())
+                if "connections" in st.secrets and hasattr(st.secrets["connections"], "keys"):
+                    conn_keys = list(st.secrets["connections"].keys())
+                    diag_notes.append(f"Chaves encontradas em `st.secrets`: {top_keys} (`connections`: {conn_keys}), porém nenhuma URL `postgresql://` foi localizada.")
+                else:
+                    diag_notes.append(f"Chaves encontradas em `st.secrets`: {top_keys} (nenhuma URL `postgresql://` localizada).")
+        except Exception as e_sec2:
+            diag_notes.append(f"Erro ao interpretar `st.secrets` (verifique se há quebras de linha ou aspas inválidas no TOML): {e_sec2}")
+
+    if not db_url:
+        # 3. Fallback: Ler diretamente todos os arquivos secrets.toml no disco (funciona mesmo se o TOML tiver erro de sintaxe!)
+        import re
+        for secrets_path in _candidate_secrets_paths():
+            try:
+                if os.path.isfile(secrets_path):
+                    with open(secrets_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    # Captura qualquer URL postgresql:// ou postgres:// diretamente no texto bruto
+                    m_pg = re.search(r'(postgres(?:ql)?://[^\s"\'\]]+)', content)
+                    if m_pg:
+                        db_url = m_pg.group(1).strip()
+                        break
+                    match_url = re.search(r'(?:url|DATABASE_URL|POSTGRES_URL)\s*=\s*["\']([^"\']+)["\']', content)
+                    if match_url:
+                        db_url = match_url.group(1).strip()
+                        break
+            except Exception:
+                pass
 
     db_url = _sanitize_db_url(db_url)
     if db_url:
@@ -326,12 +359,47 @@ def get_db_engine():
             )
             # Inicializar tabelas de forma segura e tardia (lazy)
             init_db_safe(_db_engine)
+            _last_db_diag = "Conectado com sucesso."
             return _db_engine
         except Exception as e:
+            _last_db_diag = f"URL encontrada, mas falha ao criar conexão SQLAlchemy: {e}"
             logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
             log_db_error("create_engine_error", e)
+    else:
+        _last_db_diag = " | ".join(diag_notes) if diag_notes else "Nenhuma URL `postgresql://` encontrada nas variáveis de ambiente ou nos Secrets."
             
     return None
+
+
+def get_db_diagnostics() -> str:
+    """Retorna o diagnóstico detalhado da última tentativa de conexão com o banco."""
+    return _last_db_diag or "Sem diagnóstico registrado."
+
+
+def set_runtime_db_url(raw_url: str) -> tuple:
+    """Permite configurar e conectar a URL do banco imediatamente em memória e em .streamlit/secrets.toml."""
+    global _db_engine, _db_initialized, _runtime_db_url
+    clean = _sanitize_db_url(raw_url)
+    if not clean.startswith("postgresql://"):
+        return False, "A URL deve começar com `postgresql://`."
+    _runtime_db_url = clean
+    _db_engine = None
+    _db_initialized = False
+    os.environ["DATABASE_URL"] = clean
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sec_dir = os.path.join(base_dir, ".streamlit")
+        os.makedirs(sec_dir, exist_ok=True)
+        sec_file = os.path.join(sec_dir, "secrets.toml")
+        if not os.path.exists(sec_file):
+            with open(sec_file, "w", encoding="utf-8") as f:
+                f.write(f'[connections.sql]\nurl = "{clean}"\n')
+    except Exception:
+        pass
+    eng = get_db_engine()
+    if eng is not None:
+        return True, "Banco de dados PostgreSQL conectado com sucesso!"
+    return False, f"Não foi possível conectar: {_last_db_diag}"
 
 
 def is_sql_configured() -> bool:

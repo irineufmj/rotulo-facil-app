@@ -4,7 +4,7 @@ import logging
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v1"
+_MODULE_VERSION = "2026.11.05.v2"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

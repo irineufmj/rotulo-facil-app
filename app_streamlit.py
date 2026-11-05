@@ -18,7 +18,7 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.05.v1"
+_EXPECTED_UTILS_VERSION = "2026.11.05.v2"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "consume_user_credit_sql"),
@@ -2458,15 +2458,34 @@ if is_admin:
         st.markdown("### Painel do Administrador")
         st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
         
-        from utils.db import is_sql_configured
+        from utils.db import is_sql_configured, get_db_diagnostics, set_runtime_db_url
         if is_sql_configured():
             st.caption("🟢 **Banco de Dados em Nuvem Ativo (PostgreSQL Neon)** — cadastros e receitas sincronizados de forma permanente.")
         else:
             st.warning(
-                "🟠 **Modo Local Temporário (`usuarios.json`)** — O aplicativo não encontrou a variável `[connections.sql]` "
-                "no **Streamlit Cloud Secrets**. Sem ela, o container usa um arquivo temporário que mostra apenas o `admin` "
-                "após atualizações. Configure `[connections.sql]` nas configurações (*Settings → Secrets*) do Streamlit Cloud."
+                "🟠 **Modo Local Temporário (`usuarios.json`)** — O aplicativo não encontrou a URL `postgresql://...` "
+                "no **Streamlit Cloud Secrets**.\n\n"
+                f"🔍 **Diagnóstico:** {get_db_diagnostics()}\n\n"
+                "⚠️ **Importante:** Nos Secrets (*Settings → Secrets*), é obrigatório colar **as duas linhas** abaixo "
+                "(tanto o título `[connections.sql]` quanto a linha `url = \"postgresql://...\"` na linha de baixo):"
             )
+            with st.expander("🔌 Conectar Banco em Nuvem Agora (ou ver formato dos Secrets)", expanded=True):
+                st.caption("Cole abaixo a URL `postgresql://...` do seu banco Neon para conectar imediatamente:")
+                _c_url1, _c_url2 = st.columns([3, 1])
+                _manual_db_url = _c_url1.text_input(
+                    "URL do Banco PostgreSQL (Neon):",
+                    placeholder="postgresql://usuario:senha@host.neon.tech/neondb?sslmode=require",
+                    type="password",
+                    label_visibility="collapsed",
+                    key="admin_manual_db_url",
+                )
+                if _c_url2.button("🔗 Conectar Agora", type="primary", use_container_width=True, key="btn_connect_db_now"):
+                    _ok_db, _msg_db = set_runtime_db_url(_manual_db_url)
+                    if _ok_db:
+                        st.success(_msg_db)
+                        st.rerun()
+                    else:
+                        st.error(_msg_db)
 
         users = load_users(db_lock)
         
