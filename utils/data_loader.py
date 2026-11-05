@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v3"
+_MODULE_VERSION = "2026.11.05.v4"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -227,43 +227,217 @@ def can_user_save_recipe(username: str, recipe_name: str, db_lock) -> tuple:
 
 
 def get_recipes_as_ingredients(db_lock, username):
+    """
+    Transforma as receitas salvas do usuário (ex: molhos, coberturas, recheios, massas-base)
+    em insumos prontos para uso em outras receitas, trazendo seu peso de rendimento e custo real.
+    """
     from utils.data_loader import load_saved_recipes
-    recipes = load_saved_recipes(db_lock)
+    recipes = load_saved_recipes(db_lock, username)
     recipe_ingredients = []
     for idx, r in enumerate(recipes):
         r_user = r.get("username", "")
-        if r_user == "" or r_user.lower() == username.lower():
-            # Calculate 100g nutritional profile
-            w_final = r.get("weight_final", 0.0)
+        if r_user == "" or (username and r_user.lower() == username.lower()):
+            ings = r.get("ingredients", []) or []
+            sum_ing_w = sum(float(ing.get("w", 0.0) or 0.0) for ing in ings)
+            w_final = float(r.get("weight_final", 0.0) or 0.0)
+            if w_final <= 0:
+                w_final = sum_ing_w
             if w_final <= 0:
                 continue
             
             raw_totals = {}
             total_cost = 0.0
-            for ing in r.get("ingredients", []):
-                factor = ing["w"] / 100.0
-                total_cost += ing.get("cost_kg", 0.0) * (ing["w"] / 1000.0)
+            for ing in ings:
+                w_item = float(ing.get("w", 0.0) or 0.0)
+                yf_item = float(ing.get("yield_factor", 1.0) or 1.0)
+                cost_kg_item = float(ing.get("cost_kg", 0.0) or 0.0)
+                factor = w_item / 100.0
+                total_cost += cost_kg_item * (w_item / 1000.0) * yf_item
                 
-                # Fetch all keys from ing["n"] and add them up
-                for key, val in ing["n"].items():
+                for key, val in (ing.get("n") or {}).items():
                     if isinstance(val, (int, float)):
                         raw_totals[key] = raw_totals.get(key, 0.0) + (val * factor)
                         
-            # Normalize to 100g
             n_100g = {}
             for key, val in raw_totals.items():
                 n_100g[key] = (val / w_final) * 100.0
                 
             n_100g["Custo (R$/kg)"] = (total_cost / w_final) * 1000.0
+            rec_name = (r.get("nome") or r.get("nome_produto") or f"Receita {idx+1}").strip()
                 
             recipe_ingredients.append({
-                "c": f"RECIPE-{idx}",
-                "d": f"[RECEITA] {r['nome']}",
+                "c": f"RECIPE-{idx}-{rec_name[:20]}",
+                "d": f"[RECEITA] {rec_name}",
+                "recipe_name": rec_name,
+                "recipe_total_weight_g": round(w_final, 1),
+                "recipe_total_cost": round(total_cost, 2),
                 "g": "Sub-receitas Salvas",
                 "f": "Usuário",
                 "n": n_100g
             })
     return recipe_ingredients
+
+
+def get_custom_ingredients_list(username: str = None) -> list:
+    """
+    Carrega os produtos/insumos cadastrados manualmente pelo usuário no banco SQL
+    (e sincroniza com o CSV local caso exista).
+    """
+    from utils.db import is_sql_configured, load_custom_ingredients_sql
+    sql_items = load_custom_ingredients_sql(username) if is_sql_configured() else []
+    for it in sql_items:
+        pkg_val = max(1.0, float(it.get("pkg_g") or it.get("custom_pkg_g") or 1000.0))
+        cost_kg = float((it.get("n") or {}).get("Custo (R$/kg)", 0.0) or it.get("cost", 0.0) or 0.0)
+        price_val = float(it.get("price") or it.get("custom_price") or round(cost_kg * (pkg_val / 1000.0), 2))
+        it["pkg_g"] = pkg_val
+        it["custom_pkg_g"] = pkg_val
+        it["price"] = price_val
+        it["custom_price"] = price_val
+        it["cost"] = cost_kg if cost_kg > 0 else round((price_val / pkg_val) * 1000.0, 2)
+    seen_codes = {it.get("c") for it in sql_items if it.get("c")}
+
+    if os.path.exists(CUSTOM_CSV_PATH):
+        try:
+            custom_df = pd.read_csv(CUSTOM_CSV_PATH, encoding="utf-8-sig")
+            for _, row in custom_df.iterrows():
+                code = str(row.get("codigo", "")).strip()
+                if not code or code in seen_codes:
+                    continue
+                nut_dict = {}
+                for col in custom_df.columns:
+                    if col not in ["codigo", "descricao", "classe", "fonte", "peso_embalagem", "preco_embalagem"] and pd.notna(row[col]):
+                        try:
+                            nut_dict[col] = float(row[col])
+                        except Exception:
+                            pass
+                if "Carboidrato total (g)" in nut_dict:
+                    nut_dict["Carboidrato disponível (g)"] = nut_dict["Carboidrato total (g)"]
+                    nut_dict["Açúcares totais (g)"] = nut_dict.get("Açúcares adicionados (g)", 0.0)
+                pkg_g = float(row.get("peso_embalagem", 1000.0) if "peso_embalagem" in custom_df.columns and pd.notna(row.get("peso_embalagem")) else 1000.0)
+                cost_kg = float(nut_dict.get("Custo (R$/kg)", 0.0) or 0.0)
+                price = float(row.get("preco_embalagem", 0.0) if "preco_embalagem" in custom_df.columns and pd.notna(row.get("preco_embalagem")) else round(cost_kg * (pkg_g / 1000.0), 2))
+                if cost_kg <= 0 and price > 0:
+                    cost_kg = round((price / max(1.0, pkg_g)) * 1000.0, 2)
+                sql_items.append({
+                    "c": code,
+                    "d": str(row.get("descricao", "")).strip(),
+                    "g": str(row.get("classe", "Cadastrado Manualmente")),
+                    "f": "CADASTRO",
+                    "pkg_g": pkg_g,
+                    "custom_pkg_g": pkg_g,
+                    "price": price,
+                    "custom_price": price,
+                    "cost": cost_kg,
+                    "n": nut_dict,
+                })
+                seen_codes.add(code)
+        except Exception as e:
+            logger.warning(f"Erro ao ler custom_ingredients.csv: {e}")
+    return sql_items
+
+
+def save_custom_ingredient(
+    name: str,
+    pkg_g: float = 1000.0,
+    price: float = 0.0,
+    username: str = "",
+    portion_ref: float = 100.0,
+    kcal: float = 0.0,
+    carbs: float = 0.0,
+    sug_add: float = 0.0,
+    prot: float = 0.0,
+    fat: float = 0.0,
+    sat_fat: float = 0.0,
+    trans_fat: float = 0.0,
+    fiber: float = 0.0,
+    sodium: float = 0.0,
+    **kwargs,
+) -> dict:
+    """
+    Cadastra um novo produto/ingrediente customizado no banco PostgreSQL e no CSV local,
+    retornando o dicionário completo do insumo pronto para uso imediato na receita.
+    """
+    import hashlib
+    clean_name = (name or "").strip()
+    pkg_g_safe = max(1.0, float(pkg_g or 1000.0))
+    price_safe = max(0.0, float(price or 0.0))
+    cost_kg = round((price_safe / pkg_g_safe) * 1000.0, 2)
+    portion_safe = max(1.0, float(portion_ref or 100.0))
+    factor = 100.0 / portion_safe
+
+    kcal_v = kwargs.get("kcal_portion", kcal)
+    carbs_v = kwargs.get("carbs_portion", carbs)
+    sug_v = kwargs.get("sug_add_portion", sug_add)
+    prot_v = kwargs.get("prot_portion", prot)
+    fat_v = kwargs.get("fat_portion", fat)
+    sat_v = kwargs.get("sat_fat_portion", sat_fat)
+    trans_v = kwargs.get("trans_fat_portion", trans_fat)
+    fiber_v = kwargs.get("fiber_portion", fiber)
+    sodium_v = kwargs.get("sodium_portion", sodium)
+
+    nut_dict = {
+        "Energia (kcal)": round(float(kcal_v or 0.0) * factor, 2),
+        "Carboidrato total (g)": round(float(carbs_v or 0.0) * factor, 2),
+        "Carboidrato disponível (g)": round(float(carbs_v or 0.0) * factor, 2),
+        "Açúcares adicionados (g)": round(float(sug_v or 0.0) * factor, 2),
+        "Açúcares totais (g)": round(float(sug_v or 0.0) * factor, 2),
+        "Proteína (g)": round(float(prot_v or 0.0) * factor, 2),
+        "Lipídios (g)": round(float(fat_v or 0.0) * factor, 2),
+        "Gorduras saturadas (g)": round(float(sat_v or 0.0) * factor, 2),
+        "Gorduras trans (g)": round(float(trans_v or 0.0) * factor, 2),
+        "Fibra alimentar (g)": round(float(fiber_v or 0.0) * factor, 2),
+        "Sódio (mg)": round(float(sodium_v or 0.0) * factor, 2),
+        "Custo (R$/kg)": cost_kg,
+    }
+
+    short_hash = hashlib.md5(f"{username}:{clean_name.lower()}".encode("utf-8")).hexdigest()[:6].upper()
+    new_code = f"CAD-{short_hash}"
+
+    item_obj = {
+        "c": new_code,
+        "username": username or "",
+        "d": clean_name,
+        "g": "Cadastrado Manualmente",
+        "f": "CADASTRO",
+        "pkg_g": pkg_g_safe,
+        "custom_pkg_g": pkg_g_safe,
+        "price": price_safe,
+        "custom_price": price_safe,
+        "cost": cost_kg,
+        "n": nut_dict,
+    }
+
+    from utils.db import is_sql_configured, save_custom_ingredient_sql
+    if is_sql_configured():
+        save_custom_ingredient_sql(item_obj)
+
+    try:
+        try:
+            custom_df = pd.read_csv(CUSTOM_CSV_PATH, encoding="utf-8-sig")
+        except Exception:
+            custom_df = pd.DataFrame()
+        new_row = pd.DataFrame([{
+            "codigo": new_code,
+            "descricao": clean_name,
+            "classe": "Cadastrado Manualmente",
+            "fonte": "CADASTRO",
+            "peso_embalagem": pkg_g_safe,
+            "preco_embalagem": price_safe,
+            **nut_dict,
+        }])
+        if not custom_df.empty and "codigo" in custom_df.columns:
+            custom_df = custom_df[custom_df["codigo"] != new_code]
+        custom_df = pd.concat([custom_df, new_row], ignore_index=True)
+        custom_df.to_csv(CUSTOM_CSV_PATH, index=False, encoding="utf-8-sig")
+    except Exception as csv_err:
+        logger.warning(f"Aviso ao salvar custom_ingredients.csv: {csv_err}")
+
+    try:
+        load_unified_data.clear()
+    except Exception:
+        pass
+
+    return item_obj
 
 
 # ==============================================================================
@@ -497,15 +671,22 @@ def classify_ingredient_category(food: dict) -> str:
 def format_ingredient_option_label(food: dict) -> str:
     """
     Formata o rótulo do ingrediente no seletor usando linguagem limpa e amigável para pessoas leigas,
-    sem códigos técnicos confusos.
+    destacando Receitas Salvas (molhos, coberturas, recheios) e Produtos Cadastrados.
     """
     code = food.get("c", "")
     clean_d = (food.get("d", "") or "").rstrip(", ").strip()
     source = food.get("f", "")
+    if source == "Usuário":
+        rec_name = food.get("recipe_name") or clean_d.replace("[RECEITA]", "").strip()
+        w_tot = float(food.get("recipe_total_weight_g", 0.0) or 0.0)
+        c_tot = float(food.get("recipe_total_cost", 0.0) or 0.0)
+        if w_tot > 0:
+            return f"🍲 [Minha Receita] {rec_name} (Rende {w_tot:.0f}g • Custo R$ {c_tot:.2f})"
+        return f"🍲 [Minha Receita] {rec_name}"
+    if source == "CADASTRO":
+        return f"➕ [Meu Produto] {clean_d}"
     if code in TOP_CONFECTIONERY_MAP:
         return TOP_CONFECTIONERY_MAP[code]["alias"]
-    if source in ("CADASTRO", "Usuário"):
-        return f"➕ {clean_d}"
     return clean_d
 
 
@@ -612,9 +793,45 @@ _SMART_PACKAGE_DEFAULTS = {
 def get_ingredient_smart_defaults(food: dict) -> dict:
     """
     Retorna sugestões inteligentes de peso usado na receita, peso da embalagem do mercado,
-    preço médio e dica prática em medidas caseiras (lata, caixinha, colher, xícara).
+    preço médio e dica prática em medidas caseiras (ou os dados reais de sub-receitas e produtos cadastrados).
     """
-    code = (food or {}).get("c", "")
+    if not food:
+        return {
+            "use_g": 100.0,
+            "pkg_g": 1000.0,
+            "price": 12.00,
+            "hint": "Dica de medidas: 1 colher de sopa = ~15g | 1 xícara = ~150g | 1 pacote de 1 kg = 1000g"
+        }
+
+    source = food.get("f", "")
+    if source == "Usuário":
+        pkg_g = max(1.0, float(food.get("recipe_total_weight_g", 1000.0) or 1000.0))
+        price = max(0.0, float(food.get("recipe_total_cost", 0.0) or 0.0))
+        use_g = round(min(150.0, pkg_g), 1)
+        rec_name = (food.get("recipe_name") or food.get("d", "Sua receita")).replace("[RECEITA]", "").strip()
+        return {
+            "use_g": use_g,
+            "pkg_g": pkg_g,
+            "price": price,
+            "hint": (
+                f"🍲 Receita salva '{rec_name}': a receita toda rende {pkg_g:.0f}g e custa R$ {price:.2f} "
+                f"(já preenchidos automaticamente nos campos 2 e 3). Basta informar no campo 1 quanto dela você vai usar aqui!"
+            ),
+        }
+
+    if source == "CADASTRO":
+        pkg_g = max(1.0, float(food.get("pkg_g") or food.get("custom_pkg_g") or 1000.0))
+        cost_kg = float((food.get("n") or {}).get("Custo (R$/kg)", 0.0) or food.get("cost", 0.0) or 0.0)
+        price = float(food.get("price") or food.get("custom_price") or round(cost_kg * (pkg_g / 1000.0), 2) or 10.0)
+        use_g = round(min(100.0, pkg_g), 1)
+        return {
+            "use_g": use_g,
+            "pkg_g": pkg_g,
+            "price": price,
+            "hint": f"➕ Produto cadastrado por você (Embalagem de {pkg_g:.0f}g/ml por R$ {price:.2f}).",
+        }
+
+    code = food.get("c", "")
     if code in _SMART_PACKAGE_DEFAULTS:
         return _SMART_PACKAGE_DEFAULTS[code].copy()
     return {
@@ -634,9 +851,9 @@ def filter_and_rank_ingredients(
     """
     Filtra e ordena os ingredientes priorizando:
     1. Modo Ingredientes Puros (oculta os ~4.500 pratos prontos da TBCA por padrão)
-    2. Filtro por categoria de confeitaria
+    2. Filtro por categoria (incluindo filtro exclusivo de Receitas Salvas e Produtos Cadastrados)
     3. Busca por nome comercial (alias), descrição oficial ou código
-    4. Ordenação inteligente: Top Confeitaria e cadastrados primeiro -> nome começando pelo termo -> TACO antes de TBCA
+    4. Ordenação inteligente: Top Favoritos -> Receitas Salvas e Produtos Cadastrados -> TACO -> TBCA
     """
     import unicodedata
 
@@ -653,7 +870,11 @@ def filter_and_rank_ingredients(
         pool = [f for f in foods_list if is_pure_culinary_ingredient(f)]
 
     # 2. Filtrar por categoria selecionada
-    if category == "🏆 Só os Mais Usados na Confeitaria":
+    if category == "🍲 Só Minhas Receitas Salvas":
+        pool = [f for f in pool if f.get("f", "") == "Usuário"]
+    elif category == "➕ Só Meus Produtos Cadastrados":
+        pool = [f for f in pool if f.get("f", "") == "CADASTRO"]
+    elif category == "🏆 Só os Mais Usados na Confeitaria":
         pool = [f for f in pool if f.get("c", "") in TOP_CONFECTIONERY_MAP]
     elif category and category != "⭐ Todos os Ingredientes Base":
         pool = [f for f in pool if classify_ingredient_category(f) == category]
@@ -661,20 +882,22 @@ def filter_and_rank_ingredients(
     q_norm = _norm((search_query or "").strip())
     q_words = [w for w in q_norm.split() if w]
 
-    # 3. Se não há termo de busca, retornar os Top Confeitaria + Cadastrados + Ingredientes TACO ordenados
+    # 3. Se não há termo de busca, retornar TODOS os insumos puros para busca direta no st.selectbox
     if not q_words:
         def _default_sort_key(food):
             code = food.get("c", "")
             source = food.get("f", "")
             if code in TOP_CONFECTIONERY_MAP:
                 return (0, TOP_CONFECTIONERY_MAP[code]["rank"], "")
-            if source in ("CADASTRO", "Usuário"):
+            if source == "Usuário":
                 return (1, 0, _norm(food.get("d", "")))
+            if source == "CADASTRO":
+                return (1, 1, _norm(food.get("d", "")))
             if source == "TACO":
                 return (2, 0, _norm(food.get("d", "")))
             return (3, 0, _norm(food.get("d", "")))
 
-        return sorted(pool, key=_default_sort_key)[:120]
+        return sorted(pool, key=_default_sort_key)
 
     # 4. Com termo de busca: pesquisar no alias comercial, descrição e código
     matched = []

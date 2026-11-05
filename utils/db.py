@@ -8,7 +8,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v3"
+_MODULE_VERSION = "2026.11.05.v4"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
@@ -191,6 +191,20 @@ def init_db_safe(engine):
                 mensagem TEXT,
                 status VARCHAR(50) DEFAULT 'Aberto',
                 criado_em TIMESTAMP DEFAULT NOW()
+            )
+            """))
+
+            # Tabela de Ingredientes/Produtos Customizados cadastrados pelos usuários
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS ingredientes_customizados (
+                codigo VARCHAR(64) PRIMARY KEY,
+                username VARCHAR(255),
+                descricao VARCHAR(255),
+                classe VARCHAR(100),
+                fonte VARCHAR(50),
+                peso_embalagem FLOAT DEFAULT 1000.0,
+                preco_embalagem FLOAT DEFAULT 0.0,
+                nutrientes TEXT
             )
             """))
             
@@ -938,3 +952,76 @@ def update_ticket_status_sql(ticket_id: int, new_status: str) -> bool:
     except Exception as e:
         logger.error(f"[Suporte] Erro ao atualizar status do ticket #{ticket_id}: {e}", exc_info=True)
         return False
+
+
+def save_custom_ingredient_sql(item: dict) -> bool:
+    """Salva ou atualiza um ingrediente/produto customizado no PostgreSQL."""
+    engine = get_db_engine()
+    if not engine:
+        return False
+    try:
+        nut_json = json.dumps(item.get("n", {}), ensure_ascii=False)
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO ingredientes_customizados (
+                    codigo, username, descricao, classe, fonte, peso_embalagem, preco_embalagem, nutrientes
+                ) VALUES (
+                    :codigo, :username, :descricao, :classe, :fonte, :peso_embalagem, :preco_embalagem, :nutrientes
+                )
+                ON CONFLICT (codigo) DO UPDATE SET
+                    descricao = EXCLUDED.descricao,
+                    peso_embalagem = EXCLUDED.peso_embalagem,
+                    preco_embalagem = EXCLUDED.preco_embalagem,
+                    nutrientes = EXCLUDED.nutrientes
+                """),
+                {
+                    "codigo": _safe_str(item.get("c"), "CAD-0001"),
+                    "username": _safe_str(item.get("username"), ""),
+                    "descricao": _safe_str(item.get("d"), ""),
+                    "classe": _safe_str(item.get("g"), "Cadastrado Manualmente"),
+                    "fonte": _safe_str(item.get("f"), "CADASTRO"),
+                    "peso_embalagem": _safe_float(item.get("pkg_g"), 1000.0),
+                    "preco_embalagem": _safe_float(item.get("price"), 0.0),
+                    "nutrientes": nut_json,
+                }
+            )
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao salvar ingrediente customizado no SQL: {e}", exc_info=True)
+        return False
+
+
+def load_custom_ingredients_sql(username: str = None) -> list:
+    """Carrega os ingredientes/produtos customizados salvos no PostgreSQL."""
+    engine = get_db_engine()
+    if not engine:
+        return []
+    try:
+        if username:
+            df = pd.read_sql(
+                text("SELECT * FROM ingredientes_customizados WHERE username IS NULL OR username = '' OR LOWER(username) = LOWER(:u)"),
+                engine,
+                params={"u": username}
+            )
+        else:
+            df = pd.read_sql("SELECT * FROM ingredientes_customizados", engine)
+        items = []
+        for _, row in df.iterrows():
+            try:
+                nut = json.loads(row.get("nutrientes") or "{}")
+            except Exception:
+                nut = {}
+            items.append({
+                "c": _safe_str(row.get("codigo"), ""),
+                "d": _safe_str(row.get("descricao"), ""),
+                "g": _safe_str(row.get("classe"), "Cadastrado Manualmente"),
+                "f": _safe_str(row.get("fonte"), "CADASTRO"),
+                "pkg_g": _safe_float(row.get("peso_embalagem"), 1000.0),
+                "price": _safe_float(row.get("preco_embalagem"), 0.0),
+                "n": nut,
+            })
+        return items
+    except Exception as e:
+        logger.warning(f"Aviso ao carregar ingredientes customizados do SQL: {e}")
+        return []

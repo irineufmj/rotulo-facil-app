@@ -18,11 +18,11 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.05.v3"
+_EXPECTED_UTILS_VERSION = "2026.11.05.v4"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
-    (_mod_db, "consume_user_credit_sql"),
-    (_mod_data_loader, "get_ingredient_smart_defaults"),
+    (_mod_db, "save_custom_ingredient_sql"),
+    (_mod_data_loader, "save_custom_ingredient"),
     (_mod_auth, "register_customer"),
     (_mod_calculations, "calculate_monthly_sales_goal"),
     (_mod_ui, "inject_custom_css"),
@@ -43,6 +43,7 @@ from utils.auth import (
 from utils.data_loader import (
     load_unified_data, load_saved_recipes, save_recipe, delete_recipe,
     get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
+    get_custom_ingredients_list, save_custom_ingredient,
     TOP_CONFECTIONERY_MAP, filter_and_rank_ingredients, format_ingredient_option_label,
 )
 try:
@@ -1144,51 +1145,78 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
     # ==========================================================================
     if step_cur == 1:
         st.markdown("### 🥣 Passo 1 de 3: O que vai na sua receita?")
-        st.caption("Escolha cada ingrediente que você usa, diga quanto colocou na receita e quanto pagou no pacote fechado.")
+        st.caption("Clique na caixa abaixo e **digite direto nela** para buscar qualquer ingrediente, produto cadastrado ou puxar uma **receita já salva** (como molho, cobertura, recheio ou massa-base).")
 
         curr_user = st.session_state.get("username", "")
         sub_recipes = get_recipes_as_ingredients(db_lock, curr_user)
-        dynamic_foods = foods_data + sub_recipes
+        custom_ings = get_custom_ingredients_list(curr_user)
 
-        search_query = st.text_input(
-            "🔎 Digite o nome do ingrediente para buscar (ou escolha na lista abaixo):",
-            placeholder="Ex: Leite condensado, Farinha, Ovo, Chocolate, Manteiga, Ninho...",
-            key="recipe_search"
+        # Unificar sem duplicar códigos (priorizando sub-receitas e produtos cadastrados pelo usuário)
+        seen_codes = set()
+        dynamic_foods = []
+        for item in (sub_recipes + custom_ings + foods_data):
+            code_val = str(item.get("c", ""))
+            if code_val and code_val in seen_codes:
+                continue
+            if code_val:
+                seen_codes.add(code_val)
+            dynamic_foods.append(item)
+
+        # Filtro rápido opcional de origem (Todos / Só Receitas Salvas / Só Produtos Cadastrados)
+        opt_all = "🔎 Todos os Insumos (Base + Minhas Receitas)"
+        opt_rec = f"🍲 Minhas Receitas Salvas ({len(sub_recipes)})"
+        opt_cad = f"➕ Meus Produtos Cadastrados ({len(custom_ings)})"
+        source_filter = st.radio(
+            "Filtrar lista por:",
+            options=[opt_all, opt_rec, opt_cad],
+            horizontal=True,
+            key="step1_source_filter",
+            label_visibility="collapsed"
         )
+
+        if source_filter == opt_rec:
+            cat_filter = "🍲 Só Minhas Receitas Salvas"
+        elif source_filter == opt_cad:
+            cat_filter = "➕ Só Meus Produtos Cadastrados"
+        else:
+            cat_filter = "⭐ Todos os Ingredientes Base"
 
         filtered_for_recipe = filter_and_rank_ingredients(
             foods_list=dynamic_foods,
-            search_query=search_query,
-            category="⭐ Todos os Ingredientes Base",
+            search_query="",
+            category=cat_filter,
             include_prepared_dishes=False
         )
-        if not filtered_for_recipe and search_query.strip():
-            filtered_for_recipe = filter_and_rank_ingredients(
-                foods_list=dynamic_foods,
-                search_query=search_query,
-                category="⭐ Todos os Ingredientes Base",
-                include_prepared_dishes=True
-            )
 
         if not filtered_for_recipe:
-            st.warning("Não encontramos esse ingrediente. Tente digitar apenas a primeira palavra (ex: 'Leite', 'Farinha', 'Chocolate').")
-            selected_recipe_food = foods_data[0]
-        else:
-            selected_recipe_food = st.selectbox(
-                "👉 Clique para escolher o ingrediente:",
-                options=filtered_for_recipe,
-                format_func=format_ingredient_option_label,
-                key="recipe_ing_selectbox"
-            )
+            if source_filter == opt_rec:
+                st.info("🍲 Você ainda não tem nenhuma receita salva para usar como sub-receita (ex: molho, calda, recheio ou cobertura). Salve uma receita no Passo 3 e ela aparecerá aqui automaticamente com seu rendimento e custo calculados!")
+            elif source_filter == opt_cad:
+                st.info("➕ Você ainda não cadastrou nenhum produto próprio. Use o botão **'➕ Não encontrou um produto ou marca? Cadastre aqui mesmo'** logo abaixo para criar o seu primeiro!")
+            filtered_for_recipe = filter_and_rank_ingredients(
+                foods_list=dynamic_foods,
+                search_query="",
+                category="⭐ Todos os Ingredientes Base",
+                include_prepared_dishes=False
+            ) or foods_data[:50]
+
+        selected_recipe_food = st.selectbox(
+            "🔎 Clique aqui e digite o nome do ingrediente, produto ou receita salva:",
+            options=filtered_for_recipe,
+            format_func=format_ingredient_option_label,
+            key="recipe_ing_selectbox",
+            help="Basta clicar nesta caixa e começar a digitar (ex: 'Leite condensado', 'Farinha', 'Molho', 'Cobertura') para filtrar instantaneamente."
+        )
 
         smart_def = get_ingredient_smart_defaults(selected_recipe_food)
         ing_code_sel = selected_recipe_food.get("c", "default")
+        is_sub_recipe = (selected_recipe_food.get("f") == "Usuário")
 
-        st.info(f"💡 **Dica de medida para este ingrediente:** {smart_def['hint']}")
+        st.info(f"💡 **Dica de medida:** {smart_def['hint']}")
 
         c_p1, c_p2, c_p3 = st.columns(3)
         ing_weight = c_p1.number_input(
-            "1. Quanto vai na receita? (g ou ml)",
+            "1. Quanto desta receita/molho vai usar? (g ou ml)" if is_sub_recipe else "1. Quanto vai na receita? (g ou ml)",
             min_value=1.0,
             value=float(smart_def["use_g"]),
             step=10.0,
@@ -1196,20 +1224,20 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             help="Quantidade em gramas ou ml que você coloca na receita."
         )
         pkg_price = c_p2.number_input(
-            "2. Quanto pagou no pacote fechado? (R$)",
+            "2. Custo da receita-base inteira (R$)" if is_sub_recipe else "2. Quanto pagou no pacote fechado? (R$)",
             min_value=0.0,
             value=float(smart_def["price"]),
             step=0.50,
             key=f"add_pkg_p_{ing_code_sel}",
-            help="Preço que você pagou no mercado pelo pacote, lata, caixa ou cartela fechada."
+            help="Se for uma sub-receita salva, já puxamos o custo total dela automaticamente (você pode ajustar se quiser)." if is_sub_recipe else "Preço que você pagou no mercado pelo pacote, lata, caixa ou cartela fechada."
         )
         pkg_qty = c_p3.number_input(
-            "3. Peso desse pacote fechado (g ou ml)",
+            "3. Rendimento total da receita-base (g ou ml)" if is_sub_recipe else "3. Peso desse pacote fechado (g ou ml)",
             min_value=1.0,
             value=float(smart_def["pkg_g"]),
             step=50.0,
             key=f"add_pkg_q_{ing_code_sel}",
-            help="Peso total que vem escrito na embalagem comprada (ex: 395 para lata de leite condensado, 1000 para pacote de 1kg)."
+            help="Peso total que a sua sub-receita rende." if is_sub_recipe else "Peso total que vem escrito na embalagem comprada (ex: 395 para lata de leite condensado, 1000 para pacote de 1kg)."
         )
 
         ing_cost_init = convert_package_to_cost_kg(pkg_price, pkg_qty, "g")
@@ -1217,13 +1245,26 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
 
         st.markdown(
             f"<div style='background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:10px 14px; margin:8px 0 12px 0; color:#166534; font-size:0.95rem;'>"
-            f"💰 Usando <strong>{ing_weight:.0f}g/ml</strong> deste pacote, você gasta <strong>R$ {custo_nesta_receita_preview:.2f}</strong> na sua receita."
+            f"💰 Usando <strong>{ing_weight:.0f}g/ml</strong> {'desta receita salva' if is_sub_recipe else 'deste pacote'}, você gasta <strong>R$ {custo_nesta_receita_preview:.2f}</strong> na sua receita."
             f"</div>",
             unsafe_allow_html=True
         )
 
-        if st.button("➕ Colocar este Ingrediente na Minha Receita", type="primary", use_container_width=True):
-            friendly_name = format_ingredient_option_label(selected_recipe_food).replace("⭐ ", "").replace("➕ ", "")
+        if st.button(
+            "➕ Colocar esta Receita/Insumo na Minha Receita" if is_sub_recipe else "➕ Colocar este Ingrediente na Minha Receita",
+            type="primary",
+            use_container_width=True
+        ):
+            raw_label = format_ingredient_option_label(selected_recipe_food)
+            friendly_name = (
+                raw_label
+                .replace("⭐ ", "")
+                .replace("➕ [Meu Produto] ", "")
+                .replace("➕ ", "")
+                .replace("🍲 [Minha Receita] ", "[Receita] ")
+            )
+            if " (Rende " in friendly_name:
+                friendly_name = friendly_name.split(" (Rende ")[0].strip()
             st.session_state.recipe.append({
                 "c": selected_recipe_food["c"],
                 "d": friendly_name,
@@ -1239,6 +1280,74 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
             st.toast(f"'{friendly_name}' adicionado à sua receita!")
             st.rerun()
+
+        # --- ATALHO INLINE PARA CADASTRAR NOVO PRODUTO SEM SAIR DO PASSO 1 ---
+        with st.expander("➕ Não encontrou um produto, marca ou ingrediente na lista? Cadastre aqui mesmo"):
+            st.caption("Cadastre qualquer produto específico do seu fornecedor (ex: *Chocolate Nobre Belga Callebaut*, *Embalagem Pote 250ml*, *Pasta Saborizante Pistache*). Ele ficará salvo na sua conta para todas as próximas receitas!")
+            with st.form("form_quick_custom_ing_step1", clear_on_submit=True):
+                q_c1, q_c2, q_c3, q_c4 = st.columns([2.2, 1.1, 1.1, 1.1])
+                q_name = q_c1.text_input("Nome do Produto / Marca*:", placeholder="Ex: Pasta de Pistache Italiana")
+                q_pkg_g = q_c2.number_input("Peso do pacote fechado (g/ml)*:", min_value=1.0, value=1000.0, step=50.0)
+                q_price = q_c3.number_input("Preço pago no pacote (R$)*:", min_value=0.0, value=25.0, step=1.0)
+                q_use_now = q_c4.number_input("Quanto vai usar agora? (g/ml):", min_value=1.0, value=100.0, step=10.0)
+
+                st.markdown("**📊 Tabela Nutricional do Rótulo (opcional — preencha apenas se for gerar rótulo ANVISA):**")
+                n_col0, n_col1, n_col2, n_col3, n_col4 = st.columns(5)
+                q_portion = n_col0.number_input("Porção do rótulo (g):", min_value=1.0, value=100.0, step=10.0)
+                q_kcal = n_col1.number_input("Energia (kcal):", min_value=0.0, value=0.0, step=10.0)
+                q_carb = n_col2.number_input("Carboidratos (g):", min_value=0.0, value=0.0, step=1.0)
+                q_sug_add = n_col3.number_input("Açúc. Adicionados (g):", min_value=0.0, value=0.0, step=1.0)
+                q_prot = n_col4.number_input("Proteínas (g):", min_value=0.0, value=0.0, step=1.0)
+
+                n_col5, n_col6, n_col7, n_col8, n_col9 = st.columns(5)
+                q_fat = n_col5.number_input("Gorduras Totais (g):", min_value=0.0, value=0.0, step=1.0)
+                q_sat = n_col6.number_input("Gord. Saturadas (g):", min_value=0.0, value=0.0, step=0.5)
+                q_trans = n_col7.number_input("Gord. Trans (g):", min_value=0.0, value=0.0, step=0.1)
+                q_fiber = n_col8.number_input("Fibras (g):", min_value=0.0, value=0.0, step=0.5)
+                q_sodium = n_col9.number_input("Sódio (mg):", min_value=0.0, value=0.0, step=10.0)
+
+                btn_col_a, btn_col_b = st.columns(2)
+                sub_add_now = btn_col_a.form_submit_button("✅ Cadastrar e Já Colocar Nesta Receita", type="primary", use_container_width=True)
+                sub_save_only = btn_col_b.form_submit_button("💾 Apenas Salvar na Minha Lista de Produtos", use_container_width=True)
+
+                if sub_add_now or sub_save_only:
+                    if not q_name or not q_name.strip():
+                        st.error("Por favor, digite o nome do produto para cadastrar.")
+                    else:
+                        new_food_obj = save_custom_ingredient(
+                            name=q_name.strip(),
+                            pkg_g=q_pkg_g,
+                            price=q_price,
+                            portion_ref=q_portion,
+                            kcal_portion=q_kcal,
+                            carbs_portion=q_carb,
+                            sug_add_portion=q_sug_add,
+                            prot_portion=q_prot,
+                            fat_portion=q_fat,
+                            sat_fat_portion=q_sat,
+                            trans_fat_portion=q_trans,
+                            fiber_portion=q_fiber,
+                            sodium_portion=q_sodium,
+                            username=curr_user,
+                        )
+                        if sub_add_now:
+                            st.session_state.recipe.append({
+                                "c": new_food_obj["c"],
+                                "d": new_food_obj["d"],
+                                "f": "CADASTRO",
+                                "w": float(q_use_now),
+                                "cost_kg": float(new_food_obj["cost"]),
+                                "yield_factor": 1.0,
+                                "n": new_food_obj["n"]
+                            })
+                            st.session_state.calculated = True
+                            st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
+                            if st.session_state.yield_units > 0:
+                                st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
+                            st.toast(f"✅ '{new_food_obj['d']}' cadastrado e adicionado à sua receita!")
+                        else:
+                            st.toast(f"💾 '{new_food_obj['d']}' salvo na sua lista de produtos!")
+                        st.rerun()
 
         # --- LISTA SIMPLES DOS INGREDIENTES JÁ COLOCADOS NA RECEITA ---
         if len(st.session_state.recipe) > 0:
@@ -2193,17 +2302,17 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
 # TAB 2: CADASTRAR NOVO INGREDIENTE
 # ==============================================================================
 if st.session_state.selected_page == "Cadastrar Novo Ingrediente":
-    st.markdown("### Cadastrar Novo Ingrediente")
-    st.markdown("Insira manualmente as informações nutricionais do ingrediente conforme o rótulo do fornecedor. O sistema converterá automaticamente para a base de 100g.")
+    st.markdown("### ➕ Cadastrar Novo Produto / Ingrediente")
+    st.markdown("Cadastre qualquer produto, marca específica ou insumo do seu fornecedor. Ele ficará salvo na nuvem e disponível na busca do **Passo 1** de todas as suas receitas.")
     
     with st.form("form_cadastro_ingrediente", clear_on_submit=True):
-        col_cad1, col_cad2 = st.columns(2)
-        col_cad1, col_cad2, col_cad3 = st.columns([2, 1, 1])
-        name_ing = col_cad1.text_input("Nome do Alimento / Ingrediente:", placeholder="Ex: Whey Protein Isolado Morango")
-        portion_ref = col_cad2.number_input("Porção de Referência do Rótulo (g):", min_value=1.0, value=100.0, step=5.0, help="O peso da porção informada no rótulo (ex: 30g).")
-        cost_ref = col_cad3.number_input("Custo R$/kg:", min_value=0.0, value=0.0, step=1.0, help="Custo do ingrediente por Quilo")
+        col_cad1, col_cad2, col_cad3, col_cad4 = st.columns([2.2, 1.1, 1.1, 1.1])
+        name_ing = col_cad1.text_input("Nome do Produto / Marca*:", placeholder="Ex: Whey Protein Isolado Morango")
+        pkg_g_ref = col_cad2.number_input("Peso do Pacote Fechado (g/ml)*:", min_value=1.0, value=1000.0, step=50.0, help="Peso total da embalagem que você compra (ex: 1000g para 1kg).")
+        price_ref = col_cad3.number_input("Preço Pago no Pacote (R$)*:", min_value=0.0, value=25.0, step=1.0, help="Quanto você pagou pelo pacote fechado.")
+        portion_ref = col_cad4.number_input("Porção do Rótulo (g):", min_value=1.0, value=100.0, step=5.0, help="O peso da porção informada na tabela nutricional do fornecedor (ex: 30g ou 100g).")
         
-        st.markdown("##### Nutrientes por Porção:")
+        st.markdown("##### 📊 Nutrientes por Porção (opcional — necessário apenas se for gerar rótulo ANVISA):")
         
         col_n1, col_n2, col_n3 = st.columns(3)
         kcal_portion = col_n1.number_input("Valor Energético (kcal):", min_value=0.0, value=0.0, step=5.0)
@@ -2220,61 +2329,45 @@ if st.session_state.selected_page == "Cadastrar Novo Ingrediente":
         fiber_portion = col_n8.number_input("Fibra Alimentar (g):", min_value=0.0, value=0.0, step=1.0)
         sodium_portion = col_n9.number_input("Sódio (mg):", min_value=0.0, value=0.0, step=10.0)
         
-        submit_btn = st.form_submit_button("Salvar Ingrediente", type="primary")
+        submit_btn = st.form_submit_button("✅ Salvar Produto na Minha Lista", type="primary", use_container_width=True)
         
         if submit_btn:
             if not name_ing.strip():
-                st.error("Por favor, preencha o Nome do Alimento.")
+                st.error("Por favor, preencha o Nome do Produto / Ingrediente.")
             else:
-                # Fator de conversão para 100g
-                factor = 100.0 / portion_ref
-                
-                kcal_100g = kcal_portion * factor
-                carbs_100g = carbs_portion * factor
-                sug_add_100g = sug_add_portion * factor
-                prot_100g = prot_portion * factor
-                fat_100g = fat_portion * factor
-                sat_fat_100g = sat_fat_portion * factor
-                trans_fat_100g = trans_fat_portion * factor
-                fiber_100g = fiber_portion * factor
-                sodium_100g = sodium_portion * factor
-                
-                # Ler arquivo CSV existente
-                try:
-                    custom_df = pd.read_csv(CUSTOM_CSV_PATH, encoding="utf-8-sig")
-                except Exception:
-                    custom_df = pd.DataFrame()
-                
-                # Gerar código único
-                new_id = len(custom_df) + 1
-                new_code = f"CAD-{new_id:04d}"
-                
-                # Novo registro
-                new_row = pd.DataFrame([{
-                    "codigo": new_code,
-                    "descricao": name_ing.strip(),
-                    "classe": "Cadastrado Manualmente",
-                    "fonte": "CADASTRO",
-                    "Energia (kcal)": kcal_100g,
-                    "Carboidrato total (g)": carbs_100g,
-                    "Açúcares adicionados (g)": sug_add_100g,
-                    "Proteína (g)": prot_100g,
-                    "Lipídios (g)": fat_100g,
-                    "Gorduras saturadas (g)": sat_fat_100g,
-                    "Gorduras trans (g)": trans_fat_100g,
-                    "Fibra alimentar (g)": fiber_100g,
-                    "Sódio (mg)": sodium_100g,
-                    "Custo (R$/kg)": cost_ref
-                }])
-                
-                # Salvar no CSV
-                custom_df = pd.concat([custom_df, new_row], ignore_index=True)
-                custom_df.to_csv(CUSTOM_CSV_PATH, index=False, encoding="utf-8-sig")
-                
-                st.success(f"Ingrediente **{name_ing.strip()}** cadastrado com código `{new_code}`!")
-                # Forçar a recarga dos dados na sessão
-                st.cache_data.clear()
+                new_food_obj = save_custom_ingredient(
+                    name=name_ing.strip(),
+                    pkg_g=pkg_g_ref,
+                    price=price_ref,
+                    portion_ref=portion_ref,
+                    kcal_portion=kcal_portion,
+                    carbs_portion=carbs_portion,
+                    sug_add_portion=sug_add_portion,
+                    prot_portion=prot_portion,
+                    fat_portion=fat_portion,
+                    sat_fat_portion=sat_fat_portion,
+                    trans_fat_portion=trans_fat_portion,
+                    fiber_portion=fiber_portion,
+                    sodium_portion=sodium_portion,
+                    username=st.session_state.get("username", ""),
+                )
+                st.success(f"Produto **{new_food_obj['d']}** cadastrado com sucesso (`{new_food_obj['c']}`)! Ele já está disponível no Passo 1 da Calculadora.")
                 st.rerun()
+
+    my_custom_list = get_custom_ingredients_list(st.session_state.get("username", ""))
+    if my_custom_list:
+        st.markdown("---")
+        st.markdown(f"#### 📦 Meus Produtos Cadastrados ({len(my_custom_list)})")
+        rows_cad = []
+        for c_item in my_custom_list:
+            rows_cad.append({
+                "Código": c_item.get("c", ""),
+                "Produto": c_item.get("d", ""),
+                "Pacote Padrão (g/ml)": f"{float(c_item.get('custom_pkg_g', 1000.0)):.0f}g",
+                "Preço do Pacote": f"R$ {float(c_item.get('custom_price', 0.0)):.2f}",
+                "Custo por Kg": f"R$ {float(c_item.get('cost', 0.0)):.2f}/kg",
+            })
+        st.dataframe(pd.DataFrame(rows_cad), use_container_width=True, hide_index=True)
 
 # ==============================================================================
 # TAB 4: PAINEL ADMINISTRADOR

@@ -205,6 +205,11 @@ def nome_rotulo(nome_tecnico: str) -> str:
         return ""
 
     nome_tecnico = nome_tecnico.strip()
+    # Remover prefixos visuais de sub-receitas e produtos customizados
+    for _pref in ("🍲", "➕", "⭐", "[RECEITA]", "[Receita]", "[Minha Receita]", "[Meu Produto]"):
+        nome_tecnico = nome_tecnico.replace(_pref, "").strip()
+    if " (Rende " in nome_tecnico:
+        nome_tecnico = nome_tecnico.split(" (Rende ")[0].strip()
     chave = nome_tecnico.lower()
 
     # 1. Verificação no OVERRIDE_MAP (prioridade máxima)

@@ -5,7 +5,7 @@ import urllib.request
 from utils.auth import load_users, save_users
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v3"
+_MODULE_VERSION = "2026.11.05.v4"
 
 def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: str = None) -> tuple:
     """
