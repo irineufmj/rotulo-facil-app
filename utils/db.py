@@ -8,7 +8,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v2"
+_MODULE_VERSION = "2026.11.05.v3"
 
 # Cache global do engine do SQLAlchemy
 _db_engine = None
@@ -201,16 +201,32 @@ def init_db_safe(engine):
         log_db_error("init_db_error", e)
 
 
+def _select_pg_scheme() -> str:
+    """Seleciona explicitamente o driver PostgreSQL instalado no ambiente (psycopg2, psycopg ou pg8000)."""
+    for mod_name, scheme in (
+        ("psycopg2", "postgresql+psycopg2://"),
+        ("psycopg", "postgresql+psycopg://"),
+        ("pg8000", "postgresql+pg8000://"),
+    ):
+        try:
+            __import__(mod_name)
+            return scheme
+        except ImportError:
+            continue
+    return "postgresql://"
+
+
 def _sanitize_db_url(raw_url: str) -> str:
-    """Normaliza a URL de conexão PostgreSQL para compatibilidade com SQLAlchemy e libpq."""
+    """Normaliza a URL de conexão PostgreSQL para compatibilidade com SQLAlchemy (forçando +psycopg2) e libpq."""
     if not raw_url:
         return ""
+    import re
     url = str(raw_url).strip().strip('"').strip("'")
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
+    if re.match(r'^postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://', url):
+        scheme = _select_pg_scheme()
+        url = re.sub(r'^postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://', scheme, url, count=1)
     # Remove channel_binding=require caso presente (incompatível com algumas versões de libpq no Linux)
     if "channel_binding=" in url:
-        import re
         url = re.sub(r'[?&]channel_binding=[^&]*', '', url)
         if "?" not in url and "&" in url:
             url = url.replace("&", "?", 1)
@@ -223,7 +239,7 @@ def _find_pg_url_in_mapping(obj, depth: int = 0) -> str:
         return ""
     if isinstance(obj, str):
         s = obj.strip().strip('"').strip("'")
-        if s.startswith(("postgresql://", "postgres://")):
+        if s.startswith(("postgresql://", "postgres://", "postgresql+", "postgres+")):
             return s
         return ""
     if hasattr(obj, "items"):
@@ -334,7 +350,7 @@ def get_db_engine():
                     with open(secrets_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     # Captura qualquer URL postgresql:// ou postgres:// diretamente no texto bruto
-                    m_pg = re.search(r'(postgres(?:ql)?://[^\s"\'\]]+)', content)
+                    m_pg = re.search(r'(postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://[^\s"\'\]]+)', content)
                     if m_pg:
                         db_url = m_pg.group(1).strip()
                         break
@@ -380,7 +396,7 @@ def set_runtime_db_url(raw_url: str) -> tuple:
     """Permite configurar e conectar a URL do banco imediatamente em memória e em .streamlit/secrets.toml."""
     global _db_engine, _db_initialized, _runtime_db_url
     clean = _sanitize_db_url(raw_url)
-    if not clean.startswith("postgresql://"):
+    if not clean.startswith("postgresql"):
         return False, "A URL deve começar com `postgresql://`."
     _runtime_db_url = clean
     _db_engine = None
