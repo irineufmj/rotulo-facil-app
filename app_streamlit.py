@@ -19,10 +19,10 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.05.v5"
+_EXPECTED_UTILS_VERSION = "2026.11.06.v1"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
-    (_mod_db, "save_custom_ingredient_sql"),
+    (_mod_db, "get_pool_status"),
     (_mod_data_loader, "detect_allergens_from_recipe"),
     (_mod_auth, "register_customer"),
     (_mod_calculations, "calculate_monthly_sales_goal"),
@@ -2743,9 +2743,27 @@ if is_admin:
         st.markdown("### Painel do Administrador")
         st.markdown("Gerencie contas de usuários, edite informações cadastrais (incluindo CPF e e-mail) ou exclua usuários antigos (exclusão em cascata de suas receitas).")
         
-        from utils.db import is_sql_configured, get_db_diagnostics, set_runtime_db_url
+        from utils.db import is_sql_configured, get_db_diagnostics, set_runtime_db_url, get_pool_status, dispose_idle_connections
         if is_sql_configured():
-            st.caption("🟢 **Banco de Dados em Nuvem Ativo (PostgreSQL Neon)** — cadastros e receitas sincronizados de forma permanente.")
+            _pool_info = get_pool_status()
+            _pooler_badge = "PgBouncer (`-pooler`) Ativo" if _pool_info.get("using_pgbouncer_pooler") else "QueuePool Ativo"
+            st.caption(
+                f"🟢 **Banco de Dados em Nuvem Ativo (PostgreSQL Neon — {_pooler_badge})** — "
+                f"Limite: **{_pool_info.get('pool_size', 2)} base / {_pool_info.get('max_total_connections', 5)} máx.** conexões simultâneas "
+                f"(Ativas: `{_pool_info.get('checked_out_active', 0)}` | Ociosas no pool: `{_pool_info.get('checked_in_idle', 0)}` | "
+                f"Reciclagem: `{_pool_info.get('pool_recycle_sec', 240)}s` | LIFO: `Ativo`)."
+            )
+            with st.expander("⚡ Monitoramento do Pool de Conexões Serverless (PgBouncer + SQLAlchemy)", expanded=False):
+                _pm1, _pm2, _pm3, _pm4 = st.columns(4)
+                _pm1.metric("Conexões Ativas", f"{_pool_info.get('checked_out_active', 0)} / {_pool_info.get('max_total_connections', 5)}")
+                _pm2.metric("Ociosas Prontas (Pool)", str(_pool_info.get("checked_in_idle", 0)))
+                _pm3.metric("Reciclagem Ociosa", f"{_pool_info.get('pool_recycle_sec', 240)}s")
+                _pm4.metric("Modo Pooler", "PgBouncer" if _pool_info.get("using_pgbouncer_pooler") else "Direto")
+                st.caption(f"Host conectado: `{_pool_info.get('host_masked', '')}` | Timeout de fila: `{_pool_info.get('pool_timeout_sec', 15)}s`")
+                if st.button("🧹 Encerrar Conexões Ociosas Agora (Dispose Pool)", key="btn_admin_dispose_pool"):
+                    if dispose_idle_connections():
+                        st.success("Conexões ociosas encerradas com sucesso!")
+                        st.rerun()
         else:
             st.warning(
                 "🟠 **Modo Local Temporário (`usuarios.json`)** — O aplicativo não encontrou a URL `postgresql://...` "

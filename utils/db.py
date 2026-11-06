@@ -1,18 +1,37 @@
 import os
+import re
+import sys
 import json
+import atexit
 import logging
 import traceback
 import urllib.parse
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import QueuePool
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.05.v5"
+_MODULE_VERSION = "2026.11.06.v1"
 
-# Cache global do engine do SQLAlchemy
-_db_engine = None
-_db_initialized = False
+# Limites estritos do Pool para ambiente Serverless (Streamlit Cloud + Neon PgBouncer)
+SERVERLESS_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "2"))
+SERVERLESS_MAX_OVERFLOW = int(os.environ.get("DB_MAX_OVERFLOW", "3"))
+SERVERLESS_POOL_TIMEOUT = int(os.environ.get("DB_POOL_TIMEOUT", "15"))
+SERVERLESS_POOL_RECYCLE = int(os.environ.get("DB_POOL_RECYCLE", "240"))
+
+# Registro persistente no nível do interpretador (sobrevive a importlib.reload sem vazar pools órfãos)
+if not hasattr(sys, "_rotulei_db_registry") or not isinstance(getattr(sys, "_rotulei_db_registry", None), dict):
+    sys._rotulei_db_registry = {
+        "engine": None,
+        "url": "",
+        "initialized": False,
+        "atexit_registered": False,
+    }
+
+# Cache global do engine do SQLAlchemy sincronizado com o registro do processo
+_db_engine = sys._rotulei_db_registry.get("engine")
+_db_initialized = sys._rotulei_db_registry.get("initialized", False)
 _runtime_db_url = ""
 _last_db_diag = ""
 
@@ -209,6 +228,7 @@ def init_db_safe(engine):
             """))
             
         _db_initialized = True
+        sys._rotulei_db_registry["initialized"] = True
         logger.info("[Database] Tabelas SQL verificadas/inicializadas com sucesso.")
     except Exception as e:
         logger.error(f"[Database] Erro ao inicializar tabelas do banco relacional: {e}", exc_info=True)
@@ -230,21 +250,183 @@ def _select_pg_scheme() -> str:
     return "postgresql://"
 
 
-def _sanitize_db_url(raw_url: str) -> str:
-    """Normaliza a URL de conexão PostgreSQL para compatibilidade com SQLAlchemy (forçando +psycopg2) e libpq."""
+def _ensure_neon_pooler_url(url: str, use_pooler: bool = True) -> str:
+    """
+    Em ambiente Serverless (Neon PostgreSQL), converte automaticamente endpoints diretos
+    (@ep-<id>.<regiao>.aws.neon.tech) para o endpoint PgBouncer gerenciado pelo Neon
+    (@ep-<id>-pooler.<regiao>.aws.neon.tech), evitando abrir conexões TCP diretas no compute node.
+    """
+    if not url:
+        return ""
+    if not use_pooler or os.environ.get("DB_DISABLE_NEON_POOLER", "").strip() == "1":
+        return re.sub(
+            r'(@ep-[a-z0-9-]+?)-pooler(\.[a-z0-9-]+\.aws\.neon\.tech\b)',
+            r'\1\2',
+            url,
+            count=1,
+        )
+    # Adiciona o sufixo -pooler apenas se for host Neon (ep-...) e ainda não tiver -pooler
+    return re.sub(
+        r'(@ep-[a-z0-9-]+?)(?<!-pooler)(\.[a-z0-9-]+\.aws\.neon\.tech\b)',
+        r'\1-pooler\2',
+        url,
+        count=1,
+    )
+
+
+def _sanitize_db_url(raw_url: str, use_pooler: bool = True) -> str:
+    """
+    Normaliza a URL de conexão PostgreSQL para compatibilidade com SQLAlchemy (+psycopg2),
+    libpq e PgBouncer (Neon -pooler).
+    """
     if not raw_url:
         return ""
-    import re
     url = str(raw_url).strip().strip('"').strip("'")
     if re.match(r'^postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://', url):
         scheme = _select_pg_scheme()
         url = re.sub(r'^postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://', scheme, url, count=1)
-    # Remove channel_binding=require caso presente (incompatível com algumas versões de libpq no Linux)
+    # Remove channel_binding=require caso presente (incompatível com PgBouncer e versões de libpq no Linux)
     if "channel_binding=" in url:
         url = re.sub(r'[?&]channel_binding=[^&]*', '', url)
         if "?" not in url and "&" in url:
             url = url.replace("&", "?", 1)
+    url = _ensure_neon_pooler_url(url, use_pooler=use_pooler)
     return url
+
+
+def _build_sqlalchemy_engine(db_url: str):
+    """
+    Cria uma instância SQLAlchemy Engine com QueuePool otimizado para ambientes Serverless:
+    - pool_size=2, max_overflow=3 (teto rígido de 5 conexões simultâneas por worker)
+    - pool_timeout=15s (fail-fast para evitar travamento de threads por espera infinita)
+    - pool_recycle=240s (4 min — recicla conexões antes do auto-suspend de 5 min do Neon Serverless)
+    - pool_pre_ping=True (testa a saúde do socket antes de entregar a conexão ao app)
+    - pool_use_lifo=True (reutiliza a conexão mais recente para permitir que conexões ociosas fechem)
+    - TCP keepalives ativos para detectar quedas silenciosas de rede em containers cloud
+    """
+    connect_args = {
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+        "application_name": "rotulei_serverless",
+    }
+    return create_engine(
+        db_url,
+        poolclass=QueuePool,
+        pool_size=SERVERLESS_POOL_SIZE,
+        max_overflow=SERVERLESS_MAX_OVERFLOW,
+        pool_timeout=SERVERLESS_POOL_TIMEOUT,
+        pool_recycle=SERVERLESS_POOL_RECYCLE,
+        pool_pre_ping=True,
+        pool_use_lifo=True,
+        connect_args=connect_args,
+    )
+
+
+def dispose_db_engine():
+    """
+    Encerra imediatamente todas as conexões ociosas do pool atual e limpa o registro global.
+    Chamado automaticamente no encerramento do processo (atexit) ou ao trocar a URL do banco.
+    """
+    global _db_engine, _db_initialized
+    reg_eng = sys._rotulei_db_registry.get("engine")
+    for eng in (_db_engine, reg_eng):
+        if eng is not None:
+            try:
+                eng.dispose()
+            except Exception as e:
+                logger.debug(f"[Database] Aviso ao encerrar pool de conexões: {e}")
+    _db_engine = None
+    _db_initialized = False
+    sys._rotulei_db_registry["engine"] = None
+    sys._rotulei_db_registry["url"] = ""
+    sys._rotulei_db_registry["initialized"] = False
+
+
+def dispose_idle_connections() -> bool:
+    """
+    Recicla o pool de conexões atual (`engine.dispose()`), fechando imediatamente todas as
+    conexões ociosas abertas no pool sem derrubar a configuração ativa do banco.
+    """
+    engine = get_db_engine()
+    if not engine:
+        return False
+    try:
+        engine.dispose()
+        logger.info("[Database] Conexões ociosas do pool encerradas com sucesso via engine.dispose().")
+        return True
+    except Exception as e:
+        logger.warning(f"[Database] Falha ao reciclar conexões ociosas: {e}")
+        return False
+
+
+if not sys._rotulei_db_registry.get("atexit_registered"):
+    atexit.register(dispose_db_engine)
+    sys._rotulei_db_registry["atexit_registered"] = True
+
+
+def _read_sql_df(engine, query, params: dict = None) -> pd.DataFrame:
+    """
+    Executa leitura SQL via Pandas garantindo checkout e devolução determinística da conexão
+    ao pool através de context manager (`with engine.connect() as conn:`), evitando conexões
+    presas ou órfãs após cada SELECT.
+    """
+    sql_stmt = text(query) if isinstance(query, str) else query
+    with engine.connect() as conn:
+        if params:
+            return pd.read_sql(sql_stmt, conn, params=params)
+        return pd.read_sql(sql_stmt, conn)
+
+
+def get_pool_status() -> dict:
+    """
+    Retorna telemetria em tempo real do Pool de Conexões SQLAlchemy + PgBouncer
+    para auditoria no Painel do Administrador e diagnóstico serverless.
+    """
+    engine = get_db_engine()
+    if not engine:
+        return {
+            "configured": False,
+            "using_pgbouncer_pooler": False,
+            "host_masked": "Não conectado (Modo Local JSON)",
+            "pool_class": "None",
+            "pool_size": SERVERLESS_POOL_SIZE,
+            "max_overflow": SERVERLESS_MAX_OVERFLOW,
+            "max_total_connections": SERVERLESS_POOL_SIZE + SERVERLESS_MAX_OVERFLOW,
+            "pool_recycle_sec": SERVERLESS_POOL_RECYCLE,
+            "pool_timeout_sec": SERVERLESS_POOL_TIMEOUT,
+            "lifo_enabled": True,
+            "checked_in_idle": 0,
+            "checked_out_active": 0,
+            "overflow_current": 0,
+        }
+    active_url = str(sys._rotulei_db_registry.get("url") or engine.url)
+    host_match = re.search(r'@([^:/?\s]+)', active_url)
+    host_str = host_match.group(1) if host_match else "host-oculto"
+    using_pooler = (
+        "-pooler." in host_str
+        or "pgbouncer" in host_str.lower()
+        or ":6543" in active_url
+        or ":6432" in active_url
+    )
+    pool = engine.pool
+    return {
+        "configured": True,
+        "using_pgbouncer_pooler": using_pooler,
+        "host_masked": host_str,
+        "pool_class": pool.__class__.__name__,
+        "pool_size": getattr(pool, "_pool", None).maxsize if hasattr(getattr(pool, "_pool", None), "maxsize") else SERVERLESS_POOL_SIZE,
+        "max_overflow": getattr(pool, "_max_overflow", SERVERLESS_MAX_OVERFLOW),
+        "max_total_connections": SERVERLESS_POOL_SIZE + SERVERLESS_MAX_OVERFLOW,
+        "pool_recycle_sec": getattr(pool, "_recycle", SERVERLESS_POOL_RECYCLE),
+        "pool_timeout_sec": getattr(pool, "_timeout", SERVERLESS_POOL_TIMEOUT),
+        "lifo_enabled": True,
+        "checked_in_idle": pool.checkedin() if hasattr(pool, "checkedin") else 0,
+        "checked_out_active": pool.checkedout() if hasattr(pool, "checkedout") else 0,
+        "overflow_current": pool.overflow() if hasattr(pool, "overflow") else 0,
+    }
 
 
 def _find_pg_url_in_mapping(obj, depth: int = 0) -> str:
@@ -293,34 +475,36 @@ def _candidate_secrets_paths() -> list:
 
 def get_db_engine():
     """
-    Retorna ou inicializa o engine do SQLAlchemy.
-    Suporta leitura a partir de:
-    1. URL definida em tempo de execução (_runtime_db_url) ou variáveis de ambiente
-    2. Streamlit Secrets (qualquer nível: [connections.sql], DATABASE_URL, etc.)
-    3. Leitura direta de todos os arquivos secrets.toml possíveis (mesmo se houver erro de sintaxe TOML)
+    Retorna ou inicializa o engine singleton do SQLAlchemy com Connection Pooling Serverless.
+    Preserva a instância ativa em `sys._rotulei_db_registry` para evitar abertura de múltiplos
+    pools durante recarregamentos de módulos (`importlib.reload`).
     """
-    global _db_engine, _last_db_diag
+    global _db_engine, _db_initialized, _last_db_diag
     if _db_engine is not None:
+        return _db_engine
+    if sys._rotulei_db_registry.get("engine") is not None:
+        _db_engine = sys._rotulei_db_registry["engine"]
+        _db_initialized = sys._rotulei_db_registry.get("initialized", False)
         return _db_engine
 
     diag_notes = []
-    db_url = (
+    raw_db_url = (
         _runtime_db_url
         or os.environ.get("DATABASE_URL")
         or os.environ.get("POSTGRES_URL")
         or os.environ.get("NEON_DATABASE_URL")
     )
     
-    if not db_url:
+    if not raw_db_url:
         try:
             # 1. Tentar ler URL em st.secrets["connections"]["sql"]
             if "connections" in st.secrets and "sql" in st.secrets["connections"]:
                 sql_secrets = st.secrets["connections"]["sql"]
                 if isinstance(sql_secrets, str) and sql_secrets.strip():
-                    db_url = sql_secrets.strip()
+                    raw_db_url = sql_secrets.strip()
                 elif hasattr(sql_secrets, "get"):
                     if sql_secrets.get("url"):
-                        db_url = str(sql_secrets["url"]).strip()
+                        raw_db_url = str(sql_secrets["url"]).strip()
                     else:
                         dialect = sql_secrets.get("dialect", "postgresql")
                         username = sql_secrets.get("username", "")
@@ -333,7 +517,7 @@ def get_db_engine():
                         safe_password = urllib.parse.quote_plus(str(password)) if password else ""
                         
                         if host and database:
-                            db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
+                            raw_db_url = f"{dialect}://{safe_username}:{safe_password}@{host}:{port}/{database}"
                         else:
                             diag_notes.append(
                                 "A seção `[connections.sql]` foi encontrada nos Secrets, mas está vazia (faltou a linha `url = \"postgresql://...\"` logo abaixo dela)."
@@ -341,11 +525,11 @@ def get_db_engine():
         except Exception as e_sec1:
             diag_notes.append(f"Aviso ao ler `[connections.sql]` em `st.secrets`: {e_sec1}")
 
-    if not db_url:
+    if not raw_db_url:
         try:
             # 2. Busca recursiva em qualquer chave/nível de st.secrets
-            db_url = _find_pg_url_in_mapping(st.secrets)
-            if not db_url:
+            raw_db_url = _find_pg_url_in_mapping(st.secrets)
+            if not raw_db_url:
                 top_keys = list(st.secrets.keys())
                 if "connections" in st.secrets and hasattr(st.secrets["connections"], "keys"):
                     conn_keys = list(st.secrets["connections"].keys())
@@ -355,46 +539,58 @@ def get_db_engine():
         except Exception as e_sec2:
             diag_notes.append(f"Erro ao interpretar `st.secrets` (verifique se há quebras de linha ou aspas inválidas no TOML): {e_sec2}")
 
-    if not db_url:
+    if not raw_db_url:
         # 3. Fallback: Ler diretamente todos os arquivos secrets.toml no disco (funciona mesmo se o TOML tiver erro de sintaxe!)
-        import re
         for secrets_path in _candidate_secrets_paths():
             try:
                 if os.path.isfile(secrets_path):
                     with open(secrets_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
-                    # Captura qualquer URL postgresql:// ou postgres:// diretamente no texto bruto
                     m_pg = re.search(r'(postgres(?:ql)?(?:\+[a-zA-Z0-9_]+)?://[^\s"\'\]]+)', content)
                     if m_pg:
-                        db_url = m_pg.group(1).strip()
+                        raw_db_url = m_pg.group(1).strip()
                         break
                     match_url = re.search(r'(?:url|DATABASE_URL|POSTGRES_URL)\s*=\s*["\']([^"\']+)["\']', content)
                     if match_url:
-                        db_url = match_url.group(1).strip()
+                        raw_db_url = match_url.group(1).strip()
                         break
             except Exception:
                 pass
 
-    db_url = _sanitize_db_url(db_url)
-    if db_url:
-        logger.info("[Database] Inicializando engine SQLAlchemy com pool de conexões otimizado...")
-        try:
-            _db_engine = create_engine(
-                db_url,
-                pool_pre_ping=True,
-                pool_recycle=1800,
-                pool_size=5,
-                max_overflow=10,
-                connect_args={"connect_timeout": 10},
-            )
-            # Inicializar tabelas de forma segura e tardia (lazy)
-            init_db_safe(_db_engine)
-            _last_db_diag = "Conectado com sucesso."
-            return _db_engine
-        except Exception as e:
-            _last_db_diag = f"URL encontrada, mas falha ao criar conexão SQLAlchemy: {e}"
-            logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {e}")
-            log_db_error("create_engine_error", e)
+    pooled_url = _sanitize_db_url(raw_db_url, use_pooler=True)
+    direct_url = _sanitize_db_url(raw_db_url, use_pooler=False)
+    if pooled_url:
+        logger.info("[Database] Inicializando engine SQLAlchemy com PgBouncer + QueuePool serverless...")
+        candidate_urls = [pooled_url] if pooled_url == direct_url else [pooled_url, direct_url]
+        last_err = None
+        for idx, target_url in enumerate(candidate_urls):
+            candidate_engine = None
+            try:
+                candidate_engine = _build_sqlalchemy_engine(target_url)
+                # Se convertemos automaticamente para -pooler e há fallback direto, validamos o handshake rápido
+                if len(candidate_urls) > 1 and idx == 0:
+                    with candidate_engine.connect() as conn_check:
+                        conn_check.execute(text("SELECT 1"))
+                _db_engine = candidate_engine
+                sys._rotulei_db_registry["engine"] = _db_engine
+                sys._rotulei_db_registry["url"] = target_url
+                init_db_safe(_db_engine)
+                mode_label = "PgBouncer Pooler (-pooler)" if "-pooler." in target_url else "Pool SQLAlchemy"
+                _last_db_diag = f"Conectado com sucesso ({mode_label} | máx. {SERVERLESS_POOL_SIZE + SERVERLESS_MAX_OVERFLOW} conexões)."
+                return _db_engine
+            except Exception as e:
+                last_err = e
+                if candidate_engine is not None:
+                    try:
+                        candidate_engine.dispose()
+                    except Exception:
+                        pass
+                if idx == 0 and len(candidate_urls) > 1:
+                    logger.warning(f"[Database] Endpoint -pooler indisponível ({e}); tentando fallback para endpoint direto...")
+                    continue
+        _last_db_diag = f"URL encontrada, mas falha ao criar conexão SQLAlchemy: {last_err}"
+        logger.error(f"[Database] Erro ao criar engine do SQLAlchemy: {last_err}")
+        log_db_error("create_engine_error", last_err)
     else:
         _last_db_diag = " | ".join(diag_notes) if diag_notes else "Nenhuma URL `postgresql://` encontrada nas variáveis de ambiente ou nos Secrets."
             
@@ -408,13 +604,13 @@ def get_db_diagnostics() -> str:
 
 def set_runtime_db_url(raw_url: str) -> tuple:
     """Permite configurar e conectar a URL do banco imediatamente em memória e em .streamlit/secrets.toml."""
-    global _db_engine, _db_initialized, _runtime_db_url
-    clean = _sanitize_db_url(raw_url)
+    global _runtime_db_url
+    clean = _sanitize_db_url(raw_url, use_pooler=True)
     if not clean.startswith("postgresql"):
         return False, "A URL deve começar com `postgresql://`."
+    # Encerra conexões ociosas do pool anterior antes de substituir
+    dispose_db_engine()
     _runtime_db_url = clean
-    _db_engine = None
-    _db_initialized = False
     os.environ["DATABASE_URL"] = clean
     try:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -428,7 +624,7 @@ def set_runtime_db_url(raw_url: str) -> tuple:
         pass
     eng = get_db_engine()
     if eng is not None:
-        return True, "Banco de dados PostgreSQL conectado com sucesso!"
+        return True, f"Banco de dados PostgreSQL conectado com sucesso! ({_last_db_diag})"
     return False, f"Não foi possível conectar: {_last_db_diag}"
 
 
@@ -449,7 +645,7 @@ def load_users_sql(db_lock) -> list:
         
     with db_lock:
         try:
-            df = pd.read_sql("SELECT * FROM usuarios", engine)
+            df = _read_sql_df(engine, "SELECT * FROM usuarios")
             users = df.to_dict(orient="records")
             
             # Converter campos JSON textuais e tratar NULL/NaN do pandas de volta para tipos Python seguros
@@ -492,9 +688,9 @@ def _fetch_user_credits(username: str) -> dict:
     if not engine:
         return {}
     try:
-        df = pd.read_sql(
-            text("SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)"),
+        df = _read_sql_df(
             engine,
+            text("SELECT username, is_admin, creditos_disponiveis, email FROM usuarios WHERE LOWER(username) = LOWER(:uname)"),
             params={"uname": username}
         )
         if df.empty:
@@ -739,13 +935,13 @@ def load_recipes_sql(db_lock, username: str = "") -> list:
     with db_lock:
         try:
             if username:
-                df = pd.read_sql(
-                    text("SELECT * FROM receitas WHERE LOWER(username) = LOWER(:uname) OR username = ''"),
+                df = _read_sql_df(
                     engine,
+                    text("SELECT * FROM receitas WHERE LOWER(username) = LOWER(:uname) OR username = ''"),
                     params={"uname": username}
                 )
             else:
-                df = pd.read_sql("SELECT * FROM receitas", engine)
+                df = _read_sql_df(engine, "SELECT * FROM receitas")
 
             recipes = df.to_dict(orient="records")
             
@@ -919,15 +1115,15 @@ def load_tickets_sql(status_filter: str = None) -> list:
         return []
     try:
         if status_filter:
-            df = pd.read_sql(
-                text("SELECT * FROM suporte_tickets WHERE status = :s ORDER BY criado_em DESC"),
+            df = _read_sql_df(
                 engine,
+                text("SELECT * FROM suporte_tickets WHERE status = :s ORDER BY criado_em DESC"),
                 params={"s": status_filter}
             )
         else:
-            df = pd.read_sql(
-                text("SELECT * FROM suporte_tickets ORDER BY criado_em DESC"),
-                engine
+            df = _read_sql_df(
+                engine,
+                text("SELECT * FROM suporte_tickets ORDER BY criado_em DESC")
             )
         return df.to_dict(orient="records")
     except Exception as e:
@@ -999,13 +1195,13 @@ def load_custom_ingredients_sql(username: str = None) -> list:
         return []
     try:
         if username:
-            df = pd.read_sql(
-                text("SELECT * FROM ingredientes_customizados WHERE username IS NULL OR username = '' OR LOWER(username) = LOWER(:u)"),
+            df = _read_sql_df(
                 engine,
+                text("SELECT * FROM ingredientes_customizados WHERE username IS NULL OR username = '' OR LOWER(username) = LOWER(:u)"),
                 params={"u": username}
             )
         else:
-            df = pd.read_sql("SELECT * FROM ingredientes_customizados", engine)
+            df = _read_sql_df(engine, "SELECT * FROM ingredientes_customizados")
         items = []
         for _, row in df.iterrows():
             try:
