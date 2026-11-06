@@ -1,12 +1,15 @@
 import os
+import sys
 import json
 import tempfile
+import threading
 import logging
 import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v1"
+_MODULE_VERSION = "2026.11.06.v2"
+_INTERNAL_LOCK = threading.RLock()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -68,24 +71,57 @@ def load_unified_data():
         
     return foods
 
+@st.cache_data(ttl=30)
+def _cached_recipes_sql(username_key: str) -> list:
+    from utils.db import load_recipes_sql
+    return load_recipes_sql(_INTERNAL_LOCK, username_key or "")
+
+
+@st.cache_data(ttl=30)
+def _cached_custom_ingredients_sql(username_key: str) -> list:
+    from utils.db import load_custom_ingredients_sql
+    return load_custom_ingredients_sql(username_key or None)
+
+
+def invalidate_data_caches():
+    """Limpa caches locais de receitas e ingredientes customizados após qualquer escrita."""
+    try:
+        _cached_recipes_sql.clear()
+    except Exception:
+        pass
+    try:
+        _cached_custom_ingredients_sql.clear()
+    except Exception:
+        pass
+
+
+try:
+    from utils.db import register_cache_clear_callback
+    register_cache_clear_callback(invalidate_data_caches)
+except Exception:
+    pass
+
+
 def load_saved_recipes(db_lock, username=None):
     from utils.db import is_sql_configured, load_recipes_sql, save_recipe_sql
     if is_sql_configured():
-        recipes = load_recipes_sql(db_lock, username)
-        
-        # Migração automática: Se o banco SQL estiver vazio de receitas e existir o arquivo local JSON com receitas,
-        # migramos as receitas locais para o banco SQL.
-        if len(recipes) == 0 and os.path.exists(RECIPES_JSON_PATH):
+        uname_key = (username or "").strip()
+        # Migração automática única por processo: só roda se a tabela inteira de receitas estiver vazia
+        reg = getattr(sys, "_rotulei_db_registry", {})
+        if not reg.get("legacy_recipes_migrated") and os.path.exists(RECIPES_JSON_PATH):
+            reg["legacy_recipes_migrated"] = True
             try:
-                with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
-                    local_recipes = json.load(f)
-                for lr in local_recipes:
-                    save_recipe_sql(lr["nome"], lr, db_lock)
-                recipes = load_recipes_sql(db_lock, username)
-                logger.info("Migração automática de receitas locais para o banco SQL realizada com sucesso!")
+                all_sql_recipes = load_recipes_sql(db_lock, "")
+                if len(all_sql_recipes) == 0:
+                    with open(RECIPES_JSON_PATH, "r", encoding="utf-8") as f:
+                        local_recipes = json.load(f)
+                    for lr in local_recipes:
+                        save_recipe_sql(lr["nome"], lr, db_lock)
+                    invalidate_data_caches()
+                    logger.info("Migração automática única de receitas locais para o banco SQL concluída!")
             except Exception as mig_err:
                 logger.error(f"Erro na migração automática de receitas para SQL: {mig_err}", exc_info=True)
-        return recipes
+        return [dict(r) for r in _cached_recipes_sql(uname_key)]
         
     with db_lock:
         if not os.path.exists(RECIPES_JSON_PATH):
@@ -130,7 +166,9 @@ def save_recipe(name, db_lock):
 
     from utils.db import is_sql_configured, save_recipe_sql
     if is_sql_configured():
-        return save_recipe_sql(name, new_recipe, db_lock)
+        ok = save_recipe_sql(name, new_recipe, db_lock)
+        invalidate_data_caches()
+        return ok
 
     with db_lock:
         recipes = load_saved_recipes(db_lock)
@@ -146,18 +184,24 @@ def save_recipe(name, db_lock):
         else:
             recipes.append(new_recipe)
             
-        return safe_save_json(RECIPES_JSON_PATH, recipes)
+        ok = safe_save_json(RECIPES_JSON_PATH, recipes)
+        invalidate_data_caches()
+        return ok
 
 def delete_recipe(name, db_lock):
     username = st.session_state.get("username", "")
     from utils.db import is_sql_configured, delete_recipe_sql
     if is_sql_configured():
-        return delete_recipe_sql(name, username, db_lock)
+        ok = delete_recipe_sql(name, username, db_lock)
+        invalidate_data_caches()
+        return ok
 
     with db_lock:
         recipes = load_saved_recipes(db_lock)
         recipes = [r for r in recipes if r["nome"].lower() != name.lower() or (r.get("username", "") != "" and r.get("username", "").lower() != username.lower())]
-        return safe_save_json(RECIPES_JSON_PATH, recipes)
+        ok = safe_save_json(RECIPES_JSON_PATH, recipes)
+        invalidate_data_caches()
+        return ok
 
 
 FREE_RECIPE_LIMIT = 3
@@ -166,11 +210,9 @@ FREE_RECIPE_LIMIT = 3
 def get_user_plan_status(username: str, db_lock) -> dict:
     """
     Retorna o status do plano do usuário (Freemium até 3 fichas salvas vs. Pro Ilimitado).
-    Um usuário possui o Plano Pro (fichas ilimitadas) se:
-    - for administrador (is_admin = True)
-    - tiver realizado qualquer compra/assinatura (transacoes_processadas não vazia)
-    - tiver saldo >= 3 créditos liberados
+    Usa consulta pontual `get_user_sql` e cache de receitas para evitar `SELECT * FROM usuarios` a cada clique.
     """
+    from utils.db import is_sql_configured, get_user_sql
     from utils.auth import load_users
     uname = (username or "").strip()
     user_recipes = load_saved_recipes(db_lock, uname) if uname else []
@@ -179,13 +221,17 @@ def get_user_plan_status(username: str, db_lock) -> dict:
 
     is_pro = False
     try:
-        all_users = load_users(db_lock)
-        u_obj = next((u for u in all_users if u.get("username", "").lower() == uname.lower()), None)
-        if u_obj:
-            txs = u_obj.get("transacoes_processadas", []) or []
-            creds = int(u_obj.get("creditos_disponiveis", 0) or 0)
-            if u_obj.get("is_admin", False) or len(txs) > 0 or creds >= 3:
-                is_pro = True
+        if uname:
+            if is_sql_configured():
+                u_obj = get_user_sql(uname)
+            else:
+                all_users = load_users(db_lock)
+                u_obj = next((u for u in all_users if u.get("username", "").lower() == uname.lower()), None)
+            if u_obj:
+                txs = u_obj.get("transacoes_processadas", []) or []
+                creds = int(u_obj.get("creditos_disponiveis", 0) or 0)
+                if u_obj.get("is_admin", False) or len(txs) > 0 or creds >= 3:
+                    is_pro = True
     except Exception as e:
         logger.warning(f"Erro ao verificar plano do usuário '{uname}': {e}")
 
@@ -281,10 +327,10 @@ def get_recipes_as_ingredients(db_lock, username):
 def get_custom_ingredients_list(username: str = None) -> list:
     """
     Carrega os produtos/insumos cadastrados manualmente pelo usuário no banco SQL
-    (e sincroniza com o CSV local caso exista).
+    (com cache de 30s e sincronização com o CSV local caso exista).
     """
-    from utils.db import is_sql_configured, load_custom_ingredients_sql
-    sql_items = load_custom_ingredients_sql(username) if is_sql_configured() else []
+    from utils.db import is_sql_configured
+    sql_items = [dict(it) for it in _cached_custom_ingredients_sql((username or "").strip())] if is_sql_configured() else []
     for it in sql_items:
         pkg_val = max(1.0, float(it.get("pkg_g") or it.get("custom_pkg_g") or 1000.0))
         cost_kg = float((it.get("n") or {}).get("Custo (R$/kg)", 0.0) or it.get("cost", 0.0) or 0.0)
@@ -434,6 +480,7 @@ def save_custom_ingredient(
 
     try:
         load_unified_data.clear()
+        invalidate_data_caches()
     except Exception:
         pass
 

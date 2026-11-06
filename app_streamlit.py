@@ -19,15 +19,15 @@ import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.06.v1"
+_EXPECTED_UTILS_VERSION = "2026.11.06.v2"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
-    (_mod_db, "get_pool_status"),
-    (_mod_data_loader, "detect_allergens_from_recipe"),
-    (_mod_auth, "register_customer"),
+    (_mod_db, "upsert_single_user_sql"),
+    (_mod_data_loader, "invalidate_data_caches"),
+    (_mod_auth, "create_session_token"),
     (_mod_calculations, "calculate_monthly_sales_goal"),
     (_mod_ui, "inject_custom_css"),
-    (_mod_webhook, "create_mercado_pago_preference"),
+    (_mod_webhook, "sync_user_mercadopago_payments"),
 ):
     if getattr(_mod, "_MODULE_VERSION", None) != _EXPECTED_UTILS_VERSION or not hasattr(_mod, _req_attr):
         try:
@@ -39,8 +39,10 @@ from utils.auth import authenticate_user, register_user, admin_update_user, admi
 from utils.auth import (
     register_customer, update_user_profile, user_needs_profile_completion, get_user_document,
     validate_document, validate_phone, format_document, format_phone, mask_document, only_digits,
-    SEGMENT_OPTIONS,
+    create_session_token, verify_session_token, SEGMENT_OPTIONS,
 )
+from utils.db import is_sql_configured, get_user_sql
+from utils.webhook_handler import process_mercado_pago_webhook, sync_user_mercadopago_payments
 from utils.data_loader import (
     load_unified_data, load_saved_recipes, save_recipe, delete_recipe,
     get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
@@ -691,11 +693,25 @@ def _reset_session_profile_flags():
         st.session_state.pop(_k, None)
 
 
+def get_current_user_record(username: str = None) -> dict:
+    """Busca o registro completo do usuário logado de forma pontual no SQL (sem carregar todos os usuários)."""
+    uname = (username or st.session_state.get("username", "") or "").strip()
+    if not uname:
+        return None
+    try:
+        if is_sql_configured():
+            return get_user_sql(uname)
+        return next((u for u in load_users(db_lock) if u.get("username", "").lower() == uname.lower()), None)
+    except Exception as e:
+        logger.warning(f"Erro ao buscar registro de '{uname}': {e}")
+        return None
+
+
 def get_payer_info(user: dict = None) -> dict:
     """Nome e CPF/CNPJ (descriptografado) do usuário logado para o checkout do Mercado Pago."""
     try:
         if user is None:
-            user = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), None)
+            user = get_current_user_record(st.session_state.username)
         if not user:
             return {}
         doc_tipo, doc_digits = get_user_document(user)
@@ -707,6 +723,48 @@ def get_payer_info(user: dict = None) -> dict:
     except Exception as e:
         logger.warning(f"Não foi possível montar dados do pagador: {e}")
         return {}
+
+
+# --- 1. RESTAURAÇÃO AUTOMÁTICA DE SESSÃO (RELOAD NO CELULAR / RETORNO DO CHECKOUT) ---
+if not st.session_state.logged_in and st.query_params.get("s"):
+    _ok_tok, _tok_user, _tok_adm = verify_session_token(st.query_params.get("s"))
+    if _ok_tok and _tok_user:
+        st.session_state.logged_in = True
+        st.session_state.username = _tok_user
+        st.session_state.is_admin = _tok_adm
+
+# --- 2. INTERCEPTADOR DE RETORNO DE PAGAMENTO MERCADO PAGO (RODA ANTES DA TELA DE LOGIN) ---
+_mp_pay_id = st.query_params.get("payment_id") or st.query_params.get("collection_id")
+_mp_status = st.query_params.get("status") or st.query_params.get("collection_status")
+if _mp_pay_id or _mp_status:
+    _mp_token_cfg = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
+    if _mp_pay_id and _mp_token_cfg:
+        _ok_mp, _msg_mp = process_mercado_pago_webhook(
+            {"payment_id": str(_mp_pay_id)},
+            db_lock,
+            access_token=_mp_token_cfg,
+        )
+        st.session_state["_mp_return_notice"] = ("success" if _ok_mp else "warning", _msg_mp)
+    elif _mp_status == "approved" and st.session_state.get("username") and _mp_token_cfg:
+        _ok_mp, _cnt_mp, _msg_mp = sync_user_mercadopago_payments(
+            st.session_state.username,
+            "",
+            db_lock,
+            access_token=_mp_token_cfg,
+        )
+        st.session_state["_mp_return_notice"] = ("success" if _ok_mp else "info", _msg_mp)
+    elif _mp_status == "approved":
+        st.session_state["_mp_return_notice"] = (
+            "success",
+            "🎉 **Pagamento Aprovado com Sucesso!** Seus créditos foram adicionados à sua conta.",
+        )
+    # Limpa apenas parâmetros do Mercado Pago na URL, preservando o token de sessão `s`
+    for _mp_k in (
+        "status", "payment_id", "collection_id", "collection_status", "preference_id",
+        "external_reference", "payment_type", "merchant_order_id", "site_id",
+        "processing_mode", "merchant_account_id",
+    ):
+        st.query_params.pop(_mp_k, None)
 
 
 # --- LOGIN / CADASTRO FLOW ---
@@ -789,6 +847,16 @@ if not st.session_state.logged_in:
             except Exception as read_err:
                 logger.warning(f"Falha ao ler db_error.log: {read_err}")
 
+        # Aviso caso tenha retornado do pagamento Mercado Pago antes de estar logado
+        if "_mp_return_notice" in st.session_state:
+            _lvl_mp, _txt_mp = st.session_state.pop("_mp_return_notice")
+            if _lvl_mp == "success":
+                st.success(_txt_mp)
+            elif _lvl_mp == "warning":
+                st.warning(_txt_mp)
+            else:
+                st.info(_txt_mp)
+
         # Estrutura de abas (st.tabs) limpa e minimalista no topo do formulário
         tab_login, tab_registro, tab_recuperar = st.tabs(["Entrar", "Criar Conta Grátis", "Recuperar Senha"])
         
@@ -806,6 +874,10 @@ if not st.session_state.logged_in:
                         st.session_state.logged_in = True
                         st.session_state.username = result
                         st.session_state.is_admin = is_admin
+                        try:
+                            st.query_params["s"] = create_session_token(result, is_admin)
+                        except Exception:
+                            pass
                         st.toast(f"Bem-vindo(a) de volta, {result}!")
                         st.rerun()
                     else:
@@ -860,6 +932,10 @@ if not st.session_state.logged_in:
                         st.session_state.display_name = reg_nome.strip().split(" ")[0]
                         st.session_state.profile_checked = True
                         st.session_state.needs_profile = False
+                        try:
+                            st.query_params["s"] = create_session_token(new_username, False)
+                        except Exception:
+                            pass
                         st.toast(f"Conta criada! Bem-vinda(o), {st.session_state.display_name}!")
                         st.rerun()
                     else:
@@ -912,10 +988,17 @@ if not st.session_state.logged_in:
             st.caption("👆 Clique na aba **Criar Conta Grátis** acima para salvar suas fichas técnicas completas!")
     st.stop()
 
+# Mantém o token de sessão assinado sincronizado na URL enquanto logado
+if st.session_state.logged_in and st.session_state.username and not st.query_params.get("s"):
+    try:
+        st.query_params["s"] = create_session_token(st.session_state.username, st.session_state.is_admin)
+    except Exception:
+        pass
+
 # --- COMPLETAR CADASTRO (contas antigas sem nome completo / CPF-CNPJ) — exigido logo após o login ---
 if not st.session_state.get("profile_checked", False):
     try:
-        _me = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), None)
+        _me = get_current_user_record(st.session_state.username)
     except Exception as _prof_err:
         logger.error(f"Falha ao verificar cadastro de '{st.session_state.username}': {_prof_err}")
         _me = None
@@ -925,7 +1008,7 @@ if not st.session_state.get("profile_checked", False):
         st.session_state.profile_checked = True
 
 if st.session_state.get("needs_profile", False):
-    _me = next((u for u in load_users(db_lock) if u.get("username") == st.session_state.username), {}) or {}
+    _me = get_current_user_record(st.session_state.username) or {}
     _c1, _c2, _c3 = st.columns([1, 1.6, 1])
     with _c2:
         st.markdown("### 📝 Falta pouco! Complete seu cadastro")
@@ -972,6 +1055,10 @@ if st.session_state.get("needs_profile", False):
             st.session_state.username = ""
             st.session_state.is_admin = False
             _reset_session_profile_flags()
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
             st.rerun()
     st.stop()
 
@@ -1040,8 +1127,8 @@ with st.sidebar:
         # Botão discreto para atualizar o saldo e invalidar o cache local
         if st.button("🔄 Atualizar Saldo", type="secondary", use_container_width=True):
             try:
-                from utils.db import get_user_credits_cached
-                get_user_credits_cached.clear()
+                from utils.db import invalidate_db_caches
+                invalidate_db_caches()
             except Exception:
                 pass
             st.rerun()
@@ -1067,6 +1154,10 @@ with st.sidebar:
         st.session_state.nome_produto = ""
         st.session_state.peso_embalagem = 0.0
         _reset_session_profile_flags()
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         st.toast("Você saiu da conta.")
         st.rerun()
 
@@ -1090,11 +1181,16 @@ for _idx_nav, (_lbl_nav, _page_target) in enumerate(_top_nav_items):
         st.session_state.selected_page = _page_target
         st.rerun()
 
-# --- SUCESSO NO PAGAMENTO MERCADO PAGO ---
-if st.query_params.get("status") == "approved":
-    st.success("🎉 **Pagamento Aprovado com Sucesso!** Seus créditos foram adicionados à sua conta.")
-    st.balloons()
-    st.query_params.clear()
+# --- EXIBIÇÃO DO RETORNO DE PAGAMENTO PROCESSADO PELO MERCADO PAGO ---
+if "_mp_return_notice" in st.session_state:
+    _lvl_ret, _msg_ret = st.session_state.pop("_mp_return_notice")
+    if _lvl_ret == "success":
+        st.success(f"🎉 **Pagamento Confirmado!** {_msg_ret}")
+        st.balloons()
+    elif _lvl_ret == "warning":
+        st.warning(_msg_ret)
+    else:
+        st.info(_msg_ret)
 
 # ==============================================================================
 # TAB 1: FICHA TÉCNICA & PRECIFICAÇÃO DE PRODUTOS (PASSO A PASSO SIMPLES)
@@ -2573,8 +2669,7 @@ if st.session_state.selected_page == "Meu Perfil":
     st.markdown('Edite suas informações cadastrais.')
     
     current_username = st.session_state.username
-    all_users = load_users(db_lock)
-    user_data = next((u for u in all_users if u['username'] == current_username), None)
+    user_data = get_current_user_record(current_username)
     
     if user_data:
         _pf_doc_tipo, _pf_doc_digits = get_user_document(user_data)
@@ -2631,7 +2726,7 @@ if st.session_state.selected_page == "Meu Perfil":
         access_token = get_secrets_key("MERCADOPAGO_ACCESS_TOKEN", "")
         back_url = get_secrets_key("APP_BASE_URL", "https://rotuleiapp.streamlit.app/")
         
-        from utils.webhook_handler import create_mercado_pago_preference
+        from utils.webhook_handler import create_mercado_pago_preference, sync_user_mercadopago_payments
         
         for idx, col in enumerate([col1, col2, col3]):
             pkg = packages[idx]
@@ -2661,6 +2756,26 @@ if st.session_state.selected_page == "Meu Perfil":
                         st.link_button(f"Comprar {pkg['name']}", init_point, type="primary", use_container_width=True)
                     else:
                         st.error("Erro no checkout.")
+
+        if access_token:
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.markdown("**⚡ Pagou via Pix ou Cartão e fechou a janela antes de voltar?**")
+                st.caption("Clique abaixo para consultar o Mercado Pago agora mesmo e liberar automaticamente seus créditos aprovados:")
+                if st.button("🔄 Já paguei — Verificar e Liberar Meus Créditos Agora", key="btn_sync_mp_profile", use_container_width=True):
+                    with st.spinner("Consultando pagamentos aprovados no Mercado Pago..."):
+                        added_c, sync_msg = sync_user_mercadopago_payments(
+                            username=current_username,
+                            email=user_data.get("email", ""),
+                            db_lock=db_lock,
+                            access_token=access_token,
+                        )
+                    if added_c > 0:
+                        st.success(sync_msg)
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.info(sync_msg)
     else:
         st.error('Não foi possível carregar os dados do seu perfil.')
 
@@ -2673,8 +2788,7 @@ if st.session_state.selected_page == "Suporte & Ajuda":
     st.markdown("Encontrou um problema ou tem uma sugestão? Preencha o formulário abaixo e nossa equipe retornará no seu e-mail.")
 
     # Carregar e-mail do usuário logado
-    all_users_sup = load_users(db_lock)
-    user_data_sup = next((u for u in all_users_sup if u['username'] == st.session_state.username), None)
+    user_data_sup = get_current_user_record(st.session_state.username)
     email_sup = user_data_sup.get('email', '') if user_data_sup else ''
 
     with st.form('formulario_suporte', clear_on_submit=True):

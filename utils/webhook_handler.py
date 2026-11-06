@@ -5,7 +5,7 @@ import urllib.request
 from utils.auth import load_users, save_users
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v1"
+_MODULE_VERSION = "2026.11.06.v2"
 
 def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: str = None) -> tuple:
     """
@@ -176,20 +176,82 @@ def process_mercado_pago_webhook(webhook_payload: dict, db_lock, access_token: s
             logger.error("[Webhook-Handler] Falha ao gravar usuarios atualizados no banco de dados!")
             return False, "Erro ao salvar alterações no banco de dados de usuários."
 
+def sync_user_mercadopago_payments(username: str, email: str, db_lock, access_token: str) -> tuple:
+    """
+    Busca ativamente na API do Mercado Pago os pagamentos aprovados recentes do usuário
+    (por external_reference `username:credits` ou por e-mail do pagador) e credita de forma
+    idempotente quaisquer pagamentos aprovados que ainda não tenham sido aplicados.
+    Retorna `(sucesso: bool, novos_pagamentos_aplicados: int, mensagem: str)`.
+    """
+    if not access_token:
+        return False, 0, "Chave do Mercado Pago (`MERCADOPAGO_ACCESS_TOKEN`) não configurada."
+    uname_clean = (username or "").strip().lower()
+    email_clean = (email or "").strip().lower()
+    if not uname_clean and not email_clean:
+        return False, 0, "Usuário não identificado para sincronização."
+
+    try:
+        url = "https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=30"
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            if response.status != 200:
+                return False, 0, f"Erro ao consultar Mercado Pago (HTTP {response.status})."
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        logger.error(f"[Webhook-Handler] Erro ao sincronizar pagamentos do usuário '{uname_clean}': {e}", exc_info=True)
+        return False, 0, f"Não foi possível consultar a API do Mercado Pago: {e}"
+
+    results = data.get("results", []) or []
+    applied_count = 0
+    already_processed_count = 0
+
+    for p in results:
+        if p.get("status") != "approved":
+            continue
+        ext_ref = str(p.get("external_reference") or "").strip().lower()
+        p_email = str((p.get("payer") or {}).get("email") or "").strip().lower()
+        meta = p.get("metadata") or {}
+        meta_user = str(meta.get("username") or "").strip().lower() if isinstance(meta, dict) else ""
+
+        ext_user = ext_ref.rsplit(":", 1)[0].strip() if ":" in ext_ref else ext_ref
+        matches_user = (
+            (uname_clean and (ext_user == uname_clean or meta_user == uname_clean))
+            or (email_clean and (p_email == email_clean or ext_user == email_clean))
+        )
+        if not matches_user:
+            continue
+
+        ok, msg = process_mercado_pago_webhook(p, db_lock, access_token=access_token)
+        if ok:
+            if "já haviam sido aplicados" in msg:
+                already_processed_count += 1
+            else:
+                applied_count += 1
+
+    if applied_count > 0:
+        return True, applied_count, f"✅ Encontramos e liberamos os créditos de {applied_count} pagamento(s) aprovado(s)!"
+    if already_processed_count > 0:
+        return True, 0, "ℹ️ Seus pagamentos aprovados recentes já foram creditados no seu saldo."
+    return False, 0, "Nenhum novo pagamento aprovado encontrado para sua conta nos últimos registros do Mercado Pago. Se acabou de pagar via Pix, aguarde 10 segundos e tente novamente."
+
+
 def create_mercado_pago_preference(username: str, email: str, credits: int, price: float, access_token: str, back_url: str,
                                    nome_completo: str = "", documento_tipo: str = "", documento_numero: str = "") -> str:
     """
     Cria uma preferência de pagamento no Mercado Pago usando o SDK oficial
     e retorna o init_point (link de checkout).
+    Inclui token de sessão assinado na `back_url` para preservar o login no retorno.
     """
     try:
         import mercadopago
+        from utils.auth import create_session_token
         sdk = mercadopago.SDK(access_token)
         
-        # O payer email deve ser o e-mail real do usuário ou o e-mail/username
         payer_email = email.strip() if (email and "@" in email) else f"{username}@rotulofacil.com"
         payer_data = {"email": payer_email}
-        # Dados do pagador melhoram a aprovação (antifraude) no Pix/cartão
         nome_parts = (nome_completo or "").strip().split()
         if nome_parts:
             payer_data["name"] = nome_parts[0]
@@ -201,6 +263,11 @@ def create_mercado_pago_preference(username: str, email: str, credits: int, pric
                 "type": "CNPJ" if len(doc_digits) == 14 else "CPF",
                 "number": doc_digits,
             }
+
+        # Anexa token de sessão assinado à back_url para restaurar sessão ao voltar do checkout
+        tok = create_session_token(username, is_admin=False)
+        sep = "&" if "?" in back_url else "?"
+        back_url_with_session = f"{back_url}{sep}s={tok}" if tok else back_url
         
         preference_data = {
             "items": [
@@ -213,10 +280,14 @@ def create_mercado_pago_preference(username: str, email: str, credits: int, pric
             ],
             "payer": payer_data,
             "external_reference": f"{username}:{credits}",
+            "metadata": {
+                "username": username,
+                "credits": int(credits),
+            },
             "back_urls": {
-                "success": back_url,
-                "failure": back_url,
-                "pending": back_url
+                "success": back_url_with_session,
+                "failure": back_url_with_session,
+                "pending": back_url_with_session
             },
             "auto_return": "approved"
         }

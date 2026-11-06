@@ -3,6 +3,10 @@ from email.message import EmailMessage
 import secrets
 import string
 import os
+import sys
+import time
+import hmac
+import base64
 import json
 import tempfile
 import logging
@@ -13,7 +17,14 @@ import streamlit as st
 from utils.data_loader import load_saved_recipes, safe_save_json, RECIPES_JSON_PATH
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v1"
+_MODULE_VERSION = "2026.11.06.v2"
+
+# Rate limiting global no processo (sobrevive a novas abas/sessões para bloquear força bruta)
+if not hasattr(sys, "_rotulei_login_rate_limit") or not isinstance(getattr(sys, "_rotulei_login_rate_limit", None), dict):
+    sys._rotulei_login_rate_limit = {}
+
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 300  # 5 minutos de bloqueio após 5 falhas consecutivas
 
 EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
@@ -273,13 +284,109 @@ def _slugify_username(nome: str) -> str:
     return (base or "usuario")[:30]
 
 
-def generate_username(nome: str, users: list) -> str:
-    """Gera um identificador interno único (o usuário não precisa digitar)."""
-    existing = {(u.get("username") or "").strip().lower() for u in users}
+def _get_session_signing_key() -> bytes:
+    secret = (
+        _get_secret("SESSION_SECRET_KEY")
+        or _get_secret("DOC_ENCRYPTION_KEY")
+        or _get_secret("ADMIN_PASSWORD")
+        or _get_secret("CPF_SALT", "rotulei_app_secure_cpf_salt_2026")
+    )
+    return hashlib.sha256(("rotulei-session-hmac-v1:" + str(secret)).encode("utf-8")).digest()
+
+
+def create_session_token(username: str, is_admin: bool = False, ttl_sec: int = 86400 * 7) -> str:
+    """
+    Gera um token de sessão assinado via HMAC-SHA256 para manter a usuária logada
+    ao recarregar a página no celular ou ao voltar do checkout do Mercado Pago.
+    """
+    uname = (username or "").strip()
+    if not uname:
+        return ""
+    exp = int(time.time()) + int(ttl_sec)
+    payload_str = f"{uname}|{1 if is_admin else 0}|{exp}"
+    payload_b64 = base64.urlsafe_b64encode(payload_str.encode("utf-8")).decode("ascii").rstrip("=")
+    sig = hmac.new(_get_session_signing_key(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+    return f"{payload_b64}.{sig}"
+
+
+def verify_session_token(token: str) -> tuple:
+    """
+    Valida um token de sessão assinado via HMAC-SHA256.
+    Retorna `(valido: bool, username: str, is_admin: bool)`.
+    """
+    if not token or "." not in str(token):
+        return False, "", False
+    try:
+        payload_b64, sig = str(token).strip().split(".", 1)
+        expected_sig = hmac.new(_get_session_signing_key(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected_sig):
+            return False, "", False
+        pad = "=" * ((4 - len(payload_b64) % 4) % 4)
+        decoded = base64.urlsafe_b64decode((payload_b64 + pad).encode("ascii")).decode("utf-8")
+        uname, adm_flag, exp_str = decoded.rsplit("|", 2)
+        if int(exp_str) < int(time.time()):
+            return False, "", False
+        return True, uname, (adm_flag == "1")
+    except Exception:
+        return False, "", False
+
+
+def _check_login_rate_limit(ident: str) -> tuple:
+    """
+    Verifica bloqueio global de força bruta no nível do processo (independente da aba/sessão).
+    Retorna `(bloqueado: bool, segundos_restantes: int, tentativas_usadas: int)`.
+    """
+    key = (ident or "").strip().lower() or "__anon__"
+    now = time.time()
+    bucket = sys._rotulei_login_rate_limit.get(key)
+    if not bucket:
+        return False, 0, 0
+    locked_until = float(bucket.get("locked_until", 0.0) or 0.0)
+    if locked_until > now:
+        return True, int(locked_until - now) + 1, int(bucket.get("count", MAX_LOGIN_ATTEMPTS))
+    if locked_until > 0 and locked_until <= now:
+        sys._rotulei_login_rate_limit.pop(key, None)
+        return False, 0, 0
+    return False, 0, int(bucket.get("count", 0))
+
+
+def _record_login_attempt(ident: str, success: bool) -> int:
+    """Registra tentativa de login no rate limiter global e na sessão atual."""
+    key = (ident or "").strip().lower() or "__anon__"
+    if success:
+        sys._rotulei_login_rate_limit.pop(key, None)
+        try:
+            st.session_state.login_attempts = 0
+        except Exception:
+            pass
+        return 0
+    now = time.time()
+    bucket = sys._rotulei_login_rate_limit.setdefault(key, {"count": 0, "locked_until": 0.0})
+    bucket["count"] = int(bucket.get("count", 0)) + 1
+    if bucket["count"] >= MAX_LOGIN_ATTEMPTS:
+        bucket["locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+    try:
+        st.session_state.login_attempts = bucket["count"]
+    except Exception:
+        pass
+    return bucket["count"]
+
+
+def generate_username(nome: str, users: list = None) -> str:
+    """Gera um identificador interno único (usa verificação pontual SQL se `users` não for passado)."""
+    from utils.db import is_sql_configured, get_user_sql
     base = _slugify_username(nome)
     candidate = base
-    while candidate.lower() in existing:
-        candidate = f"{base}_{secrets.randbelow(9000) + 1000}"
+    if users is not None:
+        existing = {(u.get("username") or "").strip().lower() for u in users}
+        while candidate.lower() in existing:
+            candidate = f"{base}_{secrets.randbelow(9000) + 1000}"
+        return candidate
+    if is_sql_configured():
+        for _ in range(20):
+            if get_user_sql(candidate) is None:
+                return candidate
+            candidate = f"{base}_{secrets.randbelow(9000) + 1000}"
     return candidate
 
 
@@ -307,7 +414,7 @@ def register_customer(nome_completo, email, documento_tipo, documento, password,
                       lgpd_accepted=False, marketing_optin=False, db_lock=None) -> tuple:
     """
     Cadastro público completo. Retorna (sucesso, mensagem, username_gerado).
-    Obrigatórios: nome completo, e-mail, CPF/CNPJ válido, senha (8+) confirmada e aceite LGPD.
+    Usa inserção atômica pontual (`upsert_single_user_sql`) quando o PostgreSQL está ativo.
     """
     nome_clean = re.sub(r"\s+", " ", (nome_completo or "").strip())
     email_clean = (email or "").strip()
@@ -333,6 +440,35 @@ def register_customer(nome_completo, email, documento_tipo, documento, password,
         return False, "Você precisa marcar o aceite dos Termos de Uso e da Política de Privacidade.", ""
 
     hashed_doc = hash_cpf(doc_digits)
+    from utils.db import is_sql_configured, check_user_conflict_sql, upsert_single_user_sql
+    if is_sql_configured():
+        conflict = check_user_conflict_sql(email=email_clean, cpf_hash=hashed_doc, cpf_digits=doc_digits)
+        if conflict == "email":
+            return False, "Este e-mail já está cadastrado. Use a aba **Entrar** ou **Recuperar Senha**.", ""
+        if conflict == "cpf":
+            return False, f"Este {doc_type} já está cadastrado em outra conta. Use a aba **Entrar** ou **Recuperar Senha**.", ""
+        username = generate_username(nome_clean, users=None)
+        new_user = {
+            "username": username,
+            "email": email_clean,
+            "cpf": hashed_doc,
+            "documento_tipo": doc_type,
+            "documento_enc": encrypt_document(doc_digits),
+            "nome_completo": nome_clean,
+            "telefone": tel_digits,
+            "marketing_optin": bool(marketing_optin),
+            "password_hash": hash_password(password),
+            "is_admin": False,
+            "creditos_disponiveis": 1,
+            "transacoes_processadas": [],
+            "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "lgpd_version": LGPD_TERMS_VERSION,
+            **_clean_profile_extras(nome_negocio, segmento, cidade_uf),
+        }
+        if upsert_single_user_sql(new_user, db_lock):
+            return True, "Conta criada com sucesso!", username
+        return False, "Erro ao gravar cadastro no banco de dados.", ""
+
     users = load_users(db_lock)
     for u in users:
         if (u.get("email") or "").strip().lower() == email_clean.lower():
@@ -368,9 +504,7 @@ def update_user_profile(username, nome_completo, email, telefone="", nome_negoci
                         documento_tipo=None, documento=None, new_password=None, lgpd_accepted=None,
                         marketing_optin=None, require_document=False, db_lock=None) -> tuple:
     """
-    Atualiza os dados cadastrais do próprio usuário (Meu Perfil / Completar Cadastro).
-    - documento vazio mantém o atual (a menos que require_document=True).
-    - lgpd_accepted=True registra o aceite da versão atual dos termos.
+    Atualiza os dados cadastrais do próprio usuário (Meu Perfil / Completar Cadastro) de forma atômica.
     """
     uname = (username or "").strip().lower()
     nome_clean = re.sub(r"\s+", " ", (nome_completo or "").strip())
@@ -398,6 +532,42 @@ def update_user_profile(username, nome_completo, email, telefone="", nome_negoci
         return False, "A nova senha deve conter pelo menos 8 caracteres."
     if lgpd_accepted is False:
         return False, "Você precisa marcar o aceite dos Termos de Uso e da Política de Privacidade."
+
+    from utils.db import is_sql_configured, get_user_sql, check_user_conflict_sql, upsert_single_user_sql
+    if is_sql_configured():
+        with db_lock:
+            target = get_user_sql(uname)
+            if target is None:
+                return False, "Usuário não encontrado."
+            hashed_doc = hash_cpf(doc_digits) if doc_digits else ""
+            conflict = check_user_conflict_sql(
+                email=email_clean,
+                cpf_hash=hashed_doc,
+                cpf_digits=doc_digits,
+                exclude_username=target["username"],
+            )
+            if conflict == "email":
+                return False, "Este e-mail já está cadastrado em outra conta."
+            if conflict == "cpf":
+                return False, f"Este {doc_type} já está cadastrado em outra conta."
+            if doc_digits:
+                target["cpf"] = hashed_doc
+                target["documento_tipo"] = doc_type
+                target["documento_enc"] = encrypt_document(doc_digits)
+            target["nome_completo"] = nome_clean
+            target["email"] = email_clean
+            target["telefone"] = tel_digits
+            target.update(_clean_profile_extras(nome_negocio, segmento, cidade_uf))
+            if marketing_optin is not None:
+                target["marketing_optin"] = bool(marketing_optin)
+            if lgpd_accepted:
+                target["lgpd_accepted_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                target["lgpd_version"] = LGPD_TERMS_VERSION
+            if new_password:
+                target["password_hash"] = hash_password(new_password)
+            if upsert_single_user_sql(target, db_lock):
+                return True, "Dados atualizados com sucesso!"
+            return False, "Erro ao gravar alterações no banco de dados."
 
     with db_lock:
         users = load_users(db_lock)
@@ -434,45 +604,48 @@ def update_user_profile(username, nome_completo, email, telefone="", nome_negoci
             return True, "Dados atualizados com sucesso!"
         return False, "Erro ao gravar alterações no banco de dados."
 
+
 def load_users(db_lock):
-    from utils.db import is_sql_configured, load_users_sql, save_users_sql
+    from utils.db import is_sql_configured, load_users_sql, save_users_sql, upsert_single_user_sql
     if is_sql_configured():
         users = load_users_sql(db_lock)
         if users is None:
             raise ConnectionError("Falha na conexão com o banco de dados. Operação abortada para segurança dos dados.")
         
-        # Migração automática: Se o banco SQL tiver apenas o admin (ou estiver vazio) e existir o arquivo local JSON com usuários,
-        # migramos os usuários locais para o banco SQL.
-        if len(users) <= 1 and os.path.exists(USERS_JSON_PATH):
-            try:
-                with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-                    local_users = json.load(f)
-                if len(local_users) > 0:
-                    db_usernames = {u["username"].lower() for u in users}
-                    migrated = False
-                    for lu in local_users:
-                        if lu["username"].lower() not in db_usernames:
-                            users.append(lu)
-                            migrated = True
-                    if migrated:
-                        save_users_sql(users, db_lock)
-                        logger.info("Migração automática de usuários locais para o banco SQL realizada com sucesso!")
-            except Exception as mig_err:
-                logger.error(f"Erro na migração automática de usuários para SQL: {mig_err}", exc_info=True)
+        reg = getattr(sys, "_rotulei_db_registry", {})
+        if not reg.get("legacy_users_migrated"):
+            reg["legacy_users_migrated"] = True
+            # Migração automática única: Se o banco SQL tiver apenas o admin (ou estiver vazio) e existir o arquivo local JSON
+            if len(users) <= 1 and os.path.exists(USERS_JSON_PATH):
+                try:
+                    with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+                        local_users = json.load(f)
+                    if len(local_users) > 0:
+                        db_usernames = {u["username"].lower() for u in users}
+                        migrated = False
+                        for lu in local_users:
+                            if lu["username"].lower() not in db_usernames:
+                                users.append(lu)
+                                migrated = True
+                        if migrated:
+                            save_users_sql(users, db_lock)
+                            logger.info("Migração automática única de usuários locais para o banco SQL realizada com sucesso!")
+                except Exception as mig_err:
+                    logger.error(f"Erro na migração automática de usuários para SQL: {mig_err}", exc_info=True)
 
-        # Hashing de CPFs antigos no banco SQL (LGPD) e preenchimento em memória de campos legados
-        migrated_cpf = False
-        for u in users:
-            cpf_val = u.get("cpf", "")
-            if cpf_val and not is_hashed_cpf(cpf_val):
-                u["cpf"] = hash_cpf(cpf_val)
-                migrated_cpf = True
-            if not (u.get("nome_completo") or "").strip() and u.get("username", "").lower() != "admin":
-                u["nome_completo"] = u.get("username", "")
-            if not (u.get("documento_tipo") or "").strip() and u.get("cpf"):
-                u["documento_tipo"] = "CPF"
-        if migrated_cpf:
-            save_users_sql(users, db_lock)
+            # Hashing de CPFs antigos no banco SQL (LGPD) — executado apenas uma vez por processo
+            for u in users:
+                cpf_val = u.get("cpf", "")
+                changed_u = False
+                if cpf_val and not is_hashed_cpf(cpf_val):
+                    u["cpf"] = hash_cpf(cpf_val)
+                    changed_u = True
+                if not (u.get("nome_completo") or "").strip() and u.get("username", "").lower() != "admin":
+                    u["nome_completo"] = u.get("username", "")
+                if not (u.get("documento_tipo") or "").strip() and u.get("cpf"):
+                    u["documento_tipo"] = "CPF"
+                if changed_u:
+                    upsert_single_user_sql(u, db_lock)
 
         has_admin = any(u.get("is_admin", False) for u in users)
         if not has_admin:
@@ -488,16 +661,16 @@ def load_users(db_lock):
                 "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "lgpd_version": "1.0"
             }
-            admin_exists = any(u["username"].lower() == "admin" for u in users)
-            if not admin_exists:
-                users.append(default_admin)
+            admin_target = default_admin
+            for u in users:
+                if u["username"].lower() == "admin":
+                    u["is_admin"] = True
+                    u["cpf"] = hash_cpf("00000000000")
+                    admin_target = u
+                    break
             else:
-                for u in users:
-                    if u["username"].lower() == "admin":
-                        u["is_admin"] = True
-                        u["cpf"] = hash_cpf("00000000000")
-                        break
-            save_users_sql(users, db_lock)
+                users.append(default_admin)
+            upsert_single_user_sql(admin_target, db_lock)
         return users
 
     with db_lock:
@@ -510,7 +683,6 @@ def load_users(db_lock):
                 logger.error(f"Erro ao carregar usuários: {e}", exc_info=True)
                 st.error(f"Erro ao carregar usuários: {e}")
                 
-        # Migração / Sanitização: Garantir creditos_disponiveis, transacoes_processadas e CPF hash
         migrated = False
         for u in users:
             if "fim_acesso" in u:
@@ -525,7 +697,6 @@ def load_users(db_lock):
             if "transacoes_processadas" not in u:
                 u["transacoes_processadas"] = []
                 migrated = True
-            # Hashing CPF para LGPD
             cpf_val = u.get("cpf", "")
             if cpf_val and not is_hashed_cpf(cpf_val):
                 u["cpf"] = hash_cpf(cpf_val)
@@ -572,7 +743,7 @@ def consume_user_credit(username: str, db_lock) -> tuple:
     Debita 1 crédito do usuário de forma atômica e segura (via SQL atômico ou arquivo JSON protegido por lock).
     Retorna (sucesso: bool, mensagem: str).
     """
-    from utils.db import is_sql_configured, consume_user_credit_sql, get_user_credits_cached
+    from utils.db import is_sql_configured, consume_user_credit_sql, invalidate_db_caches
     if is_sql_configured():
         return consume_user_credit_sql(username, db_lock)
 
@@ -600,10 +771,7 @@ def consume_user_credit(username: str, db_lock) -> tuple:
 
         target_user["creditos_disponiveis"] = current_credits - 1
         if safe_save_json(USERS_JSON_PATH, users):
-            try:
-                get_user_credits_cached.clear()
-            except Exception:
-                pass
+            invalidate_db_caches()
             return True, f"Crédito debitado com sucesso. Restantes: {target_user['creditos_disponiveis']}"
         else:
             target_user["creditos_disponiveis"] = current_credits
@@ -637,11 +805,12 @@ def verify_password(stored_password, provided_password):
         return False
     salt, stored_hash = stored_password.split(':', 1)
     if len(salt) == 32 and len(stored_hash) == 64:
-        return stored_hash == hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
+        calc_sha = hashlib.sha256((salt + provided_password).encode('utf-8')).hexdigest()
+        return hmac.compare_digest(stored_hash, calc_sha)
     try:
         salt_bytes = bytes.fromhex(salt)
         key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt_bytes, 600_000)
-        return stored_hash == key.hex()
+        return hmac.compare_digest(stored_hash, key.hex())
     except Exception as e:
         logger.warning(f"Erro ao verificar senha: {e}", exc_info=True)
         return False
@@ -660,25 +829,12 @@ def register_user(username, email, cpf="", password="", lgpd_accepted=False, db_
     if not EMAIL_RE.match(email_clean):
         return False, "Por favor, informe um endereço de e-mail válido."
         
-    # CPF é opcional no cadastro rápido; se informado, validamos
     if cpf_digits and not (validate_cnpj(cpf_digits) if len(cpf_digits) == 14 else validate_cpf(cpf_digits)):
         return False, "Por favor, informe um CPF/CNPJ válido ou deixe em branco."
     if len(password or "") < 8:
         return False, "A senha deve conter pelo menos 8 caracteres."
         
     hashed_cpf = hash_cpf(cpf_digits) if cpf_digits else ""
-    users = load_users(db_lock)
-    for u in users:
-        if u["username"].lower() == username_clean.lower():
-            return False, "Este nome de usuário já está em uso."
-        if u.get("email", "").lower() == email_clean.lower():
-            return False, "Este endereço de e-mail já está cadastrado."
-        if cpf_digits:
-            db_cpf = u.get("cpf", "")
-            # Suporta verificação de duplicidade com CPF criptografado ou texto claro legado
-            if db_cpf and (db_cpf == hashed_cpf or db_cpf == cpf_digits):
-                return False, "Este CPF já está cadastrado em outra conta."
-            
     new_user = {
         "username": username_clean,
         "email": email_clean,
@@ -692,121 +848,154 @@ def register_user(username, email, cpf="", password="", lgpd_accepted=False, db_
         "lgpd_accepted_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         "lgpd_version": "1.0"
     }
+
+    from utils.db import is_sql_configured, check_user_conflict_sql, upsert_single_user_sql
+    if is_sql_configured():
+        conflict = check_user_conflict_sql(
+            username=username_clean,
+            email=email_clean,
+            cpf_hash=hashed_cpf,
+            cpf_digits=cpf_digits,
+        )
+        if conflict == "username":
+            return False, "Este nome de usuário já está em uso."
+        if conflict == "email":
+            return False, "Este endereço de e-mail já está cadastrado."
+        if conflict == "cpf":
+            return False, "Este CPF/CNPJ já está cadastrado em outra conta."
+        if upsert_single_user_sql(new_user, db_lock):
+            return True, "Usuário cadastrado com sucesso!"
+        return False, "Erro ao gravar cadastro no banco de dados."
+
+    users = load_users(db_lock)
+    for u in users:
+        if u["username"].lower() == username_clean.lower():
+            return False, "Este nome de usuário já está em uso."
+        if u.get("email", "").lower() == email_clean.lower():
+            return False, "Este endereço de e-mail já está cadastrado."
+        if cpf_digits:
+            db_cpf = u.get("cpf", "")
+            if db_cpf and (db_cpf == hashed_cpf or db_cpf == cpf_digits):
+                return False, "Este CPF já está cadastrado em outra conta."
+            
     users.append(new_user)
     if save_users(users, db_lock):
         return True, "Usuário cadastrado com sucesso!"
     return False, "Erro ao gravar cadastro no banco de dados."
 
 def authenticate_user(username, password, db_lock):
-    username_clean = username.strip()
+    username_clean = (username or "").strip()
     if not username_clean or not password:
         return False, "Por favor, preencha todos os campos.", False
         
     if "login_attempts" not in st.session_state:
         st.session_state.login_attempts = 0
         
-    if st.session_state.login_attempts >= 5:
-        return False, "Acesso bloqueado temporariamente por excesso de tentativas falhas.", False
+    is_locked, wait_sec, _used = _check_login_rate_limit(username_clean)
+    if is_locked or st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
+        mins = max(1, (wait_sec + 59) // 60) if wait_sec > 0 else 5
+        return False, f"Acesso bloqueado temporariamente por excesso de tentativas falhas. Aguarde ~{mins} min.", False
         
-    users = load_users(db_lock)
-    # Login aceita: nome de usuário, nome completo, e-mail ou CPF/CNPJ (comparado pelo hash)
     ident_digits = only_digits(username_clean)
     ident_doc_hash = ""
     if len(ident_digits) in (11, 14) and not EMAIL_RE.match(username_clean):
         ident_doc_hash = hash_cpf(ident_digits)
     ident_lower = username_clean.lower()
-    for u in users:
-        match_doc = bool(ident_doc_hash) and u.get("cpf", "") in (ident_doc_hash, ident_digits)
-        match_user = u["username"].strip().lower() == ident_lower
-        match_nome = bool(u.get("nome_completo")) and u["nome_completo"].strip().lower() == ident_lower
-        match_email = bool(u.get("email")) and u["email"].strip().lower() == ident_lower
-        if match_doc or match_user or match_nome or match_email:
-            # Verifica a senha do usuário
-            is_valid_pass = verify_password(u["password_hash"], password)
 
-            # Verificação de master password via st.secrets (somente para administradores)
-            # NUNCA é impressa ou logada em texto puro
-            if not is_valid_pass and u.get("is_admin", False):
+    from utils.db import is_sql_configured, get_user_sql, upsert_single_user_sql
+    target_user = None
+    users_list_fallback = None
+    if is_sql_configured():
+        target_user = get_user_sql(username_clean, cpf_hash=ident_doc_hash, cpf_digits=ident_digits)
+        # Se a pessoa tentar logar com 'admin' pela primeira vez antes do seed do admin rodar:
+        if target_user is None and ident_lower == "admin":
+            users_list_fallback = load_users(db_lock)
+            target_user = next((u for u in users_list_fallback if u["username"].lower() == "admin"), None)
+    else:
+        users_list_fallback = load_users(db_lock)
+        for u in users_list_fallback:
+            match_doc = bool(ident_doc_hash) and u.get("cpf", "") in (ident_doc_hash, ident_digits)
+            match_user = u["username"].strip().lower() == ident_lower
+            match_nome = bool(u.get("nome_completo")) and u["nome_completo"].strip().lower() == ident_lower
+            match_email = bool(u.get("email")) and u["email"].strip().lower() == ident_lower
+            if match_doc or match_user or match_nome or match_email:
+                target_user = u
+                break
+
+    if target_user is not None:
+        is_valid_pass = verify_password(target_user.get("password_hash", ""), password)
+
+        # Verificação segura (tempo constante) de master password via st.secrets para administradores
+        if not is_valid_pass and target_user.get("is_admin", False):
+            try:
+                master_pass = str(st.secrets.get("ADMIN_PASSWORD", "") or os.environ.get("ADMIN_PASSWORD", ""))
+                if master_pass and hmac.compare_digest(password.encode("utf-8"), master_pass.encode("utf-8")):
+                    is_valid_pass = True
+            except Exception:
+                pass
+
+        if is_valid_pass:
+            _record_login_attempt(username_clean, True)
+
+            # Migração automática transparente de hash legado (SHA-256 ou PBKDF2) para bcrypt
+            stored = target_user.get("password_hash", "")
+            if not stored.startswith(("$2b$", "$2a$", "$2y$")):
                 try:
-                    master_pass = st.secrets.get("ADMIN_PASSWORD", "")
-                    if master_pass and password == master_pass:
-                        is_valid_pass = True
-                except Exception:
-                    pass
+                    new_hash = hash_password(password)
+                    if new_hash != stored:
+                        target_user["password_hash"] = new_hash
+                        if is_sql_configured():
+                            upsert_single_user_sql(target_user, db_lock)
+                        elif users_list_fallback is not None:
+                            save_users(users_list_fallback, db_lock)
+                        logger.info(f"Hash de senha migrado automaticamente para bcrypt para '{target_user['username']}'.")
+                except Exception as mig_err:
+                    logger.warning(f"Falha na migração de hash: {mig_err}")
 
-            if is_valid_pass:
-                st.session_state.login_attempts = 0
-
-                # Migração automática transparente de hash legado (SHA-256 ou PBKDF2) para bcrypt
-                stored = u.get("password_hash", "")
-                if not stored.startswith(("$2b$", "$2a$", "$2y$")):
-                    try:
-                        new_hash = hash_password(password)
-                        if new_hash != stored:
-                            u["password_hash"] = new_hash
-                            save_users(users, db_lock)
-                            logger.info(f"Hash de senha migrado automaticamente para bcrypt para o usuário '{u['username']}'.")
-                    except Exception as mig_err:
-                        logger.warning(f"Falha na migração de hash: {mig_err}")
-
-                return True, u["username"], u.get("is_admin", False)
-            else:
-                st.session_state.login_attempts += 1
-                attempts_left = max(0, 5 - st.session_state.login_attempts)
-                return False, f"Senha incorreta. {attempts_left} tentativa(s) restante(s).", False
+            return True, target_user["username"], bool(target_user.get("is_admin", False))
+        else:
+            used_now = _record_login_attempt(username_clean, False)
+            attempts_left = max(0, MAX_LOGIN_ATTEMPTS - used_now)
+            return False, f"Senha incorreta. {attempts_left} tentativa(s) restante(s).", False
                 
-    st.session_state.login_attempts += 1
-    attempts_left = max(0, 5 - st.session_state.login_attempts)
+    used_now = _record_login_attempt(username_clean, False)
+    attempts_left = max(0, MAX_LOGIN_ATTEMPTS - used_now)
     return False, f"Conta não encontrada. Confira seu usuário, e-mail ou CPF/CNPJ. {attempts_left} tentativa(s) restante(s).", False
 
 def admin_delete_user(username_to_delete, db_lock):
-    username_clean = username_to_delete.strip().lower()
+    username_clean = (username_to_delete or "").strip().lower()
+    if st.session_state.get("username", "").strip().lower() == username_clean:
+        return False, "Você não pode excluir a sua própria conta ativa de administrador."
+
+    from utils.db import is_sql_configured, delete_single_user_sql
+    if is_sql_configured():
+        if delete_single_user_sql(username_clean, db_lock):
+            return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
+        return False, "Usuário não encontrado ou erro ao excluir no banco SQL."
+
     with db_lock:
         users = load_users(db_lock)
-        if st.session_state.get("username", "").strip().lower() == username_clean:
-            return False, "Você não pode excluir a sua própria conta ativa de administrador."
-            
         new_users = [u for u in users if u["username"].strip().lower() != username_clean]
-        
         if len(new_users) == len(users):
             return False, "Usuário não encontrado."
-            
-        # Roteamento seguro pelo save_users() que verifica SQL/JSON
         if save_users(new_users, db_lock):
-            from utils.db import is_sql_configured, get_db_engine
-            from sqlalchemy import text
-            if is_sql_configured():
-                try:
-                    engine = get_db_engine()
-                    if engine is not None:
-                        with engine.begin() as conn:
-                            conn.execute(
-                                text("DELETE FROM receitas WHERE LOWER(username) = LOWER(:username)"),
-                                {"username": username_clean}
-                            )
-                except Exception as e:
-                    logger.error(f"Erro ao deletar receitas do usuario deletado do banco SQL: {e}")
-            else:
-                recipes = load_saved_recipes(db_lock)
-                new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
-                safe_save_json(RECIPES_JSON_PATH, new_recipes)
+            recipes = load_saved_recipes(db_lock)
+            new_recipes = [r for r in recipes if r.get("username", "").strip().lower() != username_clean]
+            safe_save_json(RECIPES_JSON_PATH, new_recipes)
             return True, f"Usuário '{username_to_delete}' e suas receitas associadas foram excluídos."
-            
         return False, "Erro ao atualizar banco de dados de usuários."
 
 def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, new_password=None, is_admin_val=False, creditos_val=None, skip_validation=False):
-    old_clean = old_username.strip().lower()
-    new_username_clean = new_username.strip()
-    new_email_clean = new_email.strip()
-    new_cpf_digits = ''.join(filter(str.isdigit, new_cpf))
+    old_clean = (old_username or "").strip().lower()
+    new_username_clean = (new_username or "").strip()
+    new_email_clean = (new_email or "").strip()
+    new_cpf_digits = ''.join(filter(str.isdigit, new_cpf or ""))
     
-    # Se new_cpf contém asteriscos ou é vazio, significa que não foi alterado
-    cpf_not_changed = ("*" in new_cpf or not new_cpf_digits)
+    cpf_not_changed = ("*" in (new_cpf or "") or not new_cpf_digits)
     
     if not new_username_clean:
         return False, "O nome de usuário não pode ser vazio."
 
-    # skip_validation=True ignora validações de e-mail e CPF (ex: ajuste rápido de créditos)
     if not skip_validation:
         if not EMAIL_RE.match(new_email_clean):
             return False, "Por favor, informe um endereço de e-mail válido."
@@ -815,21 +1004,57 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
             ok_doc = validate_cnpj(new_cpf_digits) if len(new_cpf_digits) == 14 else validate_cpf(new_cpf_digits)
             if new_cpf_digits != "00000000000" and not ok_doc:
                 return False, "Por favor, informe um CPF (11 dígitos) ou CNPJ (14 dígitos) válido."
+    if new_password and len(new_password) < 8:
+        return False, "A senha deve conter pelo menos 8 caracteres."
+
+    new_hashed_cpf = hash_cpf(new_cpf_digits) if not cpf_not_changed else ""
+    from utils.db import is_sql_configured, get_user_sql, check_user_conflict_sql, upsert_single_user_sql
+    if is_sql_configured():
+        with db_lock:
+            target = get_user_sql(old_clean)
+            if target is None:
+                return False, "Usuário de origem não encontrado."
+            conflict = check_user_conflict_sql(
+                username=new_username_clean if new_username_clean.lower() != old_clean else "",
+                email=new_email_clean if not skip_validation else "",
+                cpf_hash=new_hashed_cpf if not cpf_not_changed else "",
+                cpf_digits=new_cpf_digits if not cpf_not_changed else "",
+                exclude_username=target["username"],
+            )
+            if conflict == "username":
+                return False, "Este nome de usuário já está em uso por outra conta."
+            if conflict == "email":
+                return False, "Este endereço de e-mail já está cadastrado em outra conta."
+            if conflict == "cpf":
+                return False, "Este CPF/CNPJ já está cadastrado em outra conta."
+
+            orig_uname = target["username"]
+            target["username"] = new_username_clean
+            target["email"] = new_email_clean
+            if not cpf_not_changed and new_hashed_cpf:
+                target["cpf"] = new_hashed_cpf
+                target["documento_tipo"] = "CNPJ" if len(new_cpf_digits) == 14 else "CPF"
+                target["documento_enc"] = encrypt_document(new_cpf_digits)
+            target["is_admin"] = bool(is_admin_val)
+            if creditos_val is not None:
+                target["creditos_disponiveis"] = int(creditos_val)
+            if new_password:
+                target["password_hash"] = hash_password(new_password)
+
+            if upsert_single_user_sql(target, db_lock, old_username=orig_uname):
+                return True, "Cadastro do usuário atualizado com sucesso!"
+            return False, "Erro ao gravar alterações no banco de dados."
         
     with db_lock:
-        new_hashed_cpf = hash_cpf(new_cpf_digits) if not cpf_not_changed else None
         users = load_users(db_lock)
         for u in users:
             u_name = u["username"].strip().lower()
             if u_name == old_clean:
                 continue
-                
             if u_name == new_username_clean.lower():
                 return False, "Este nome de usuário já está em uso por outra conta."
             if u.get("email", "").strip().lower() == new_email_clean.lower():
                 return False, "Este endereço de e-mail já está cadastrado em outra conta."
-            
-            # Validação de CPF único com comparação de hashes
             if not cpf_not_changed and new_hashed_cpf:
                 db_cpf = u.get("cpf", "")
                 if db_cpf == new_hashed_cpf or db_cpf == new_cpf_digits:
@@ -848,8 +1073,6 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
                 if creditos_val is not None:
                     u["creditos_disponiveis"] = int(creditos_val)
                 if new_password:
-                    if len(new_password) < 8:
-                        return False, "A senha deve conter pelo menos 8 caracteres."
                     u["password_hash"] = hash_password(new_password)
                 updated = True
                 break
@@ -857,28 +1080,13 @@ def admin_update_user(old_username, new_username, new_email, new_cpf, db_lock, n
         if not updated:
             return False, "Usuário de origem não encontrado."
             
-        # Roteamento seguro pelo save_users() que verifica SQL/JSON
         if save_users(users, db_lock):
             if old_clean != new_username_clean.lower():
-                from utils.db import is_sql_configured, get_db_engine
-                from sqlalchemy import text
-                if is_sql_configured():
-                    try:
-                        engine = get_db_engine()
-                        if engine is not None:
-                            with engine.begin() as conn:
-                                conn.execute(
-                                    text("UPDATE receitas SET username = :new_username WHERE LOWER(username) = LOWER(:old_username)"),
-                                    {"new_username": new_username_clean, "old_username": old_clean}
-                                )
-                    except Exception as e:
-                        logger.error(f"Erro ao atualizar receitas no SQL: {e}")
-                else:
-                    recipes = load_saved_recipes(db_lock)
-                    for r in recipes:
-                        if r.get("username", "").strip().lower() == old_clean:
-                            r["username"] = new_username_clean
-                    safe_save_json(RECIPES_JSON_PATH, recipes)
+                recipes = load_saved_recipes(db_lock)
+                for r in recipes:
+                    if r.get("username", "").strip().lower() == old_clean:
+                        r["username"] = new_username_clean
+                safe_save_json(RECIPES_JSON_PATH, recipes)
             return True, "Cadastro do usuário atualizado com sucesso!"
             
         return False, "Erro ao gravar alterações no banco de dados."
@@ -922,13 +1130,29 @@ Equipe Rotulei App
         return False, f"Falha ao enviar o e-mail: {e}"
 
 def recover_password_email(email, db_lock):
-    email_clean = email.strip().lower()
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return False, "Informe seu e-mail cadastrado."
+
+    from utils.db import is_sql_configured, get_user_sql, upsert_single_user_sql
+    if is_sql_configured():
+        with db_lock:
+            u = get_user_sql(email_clean)
+            if not u or (u.get("email") or "").strip().lower() != email_clean:
+                return False, "Nenhuma conta encontrada com este e-mail."
+            alphabet = string.ascii_letters + string.digits
+            temp_password = ''.join(secrets.choice(alphabet) for _ in range(10))
+            success, msg = send_recovery_email(email_clean, u.get('username', 'Usuário'), temp_password)
+            if success:
+                u['password_hash'] = hash_password(temp_password)
+                upsert_single_user_sql(u, db_lock)
+                return True, "Uma nova senha temporária foi enviada para o seu e-mail."
+            return False, msg
     
     with db_lock:
         users = load_users(db_lock)
         for u in users:
             if u.get('email', '').strip().lower() == email_clean:
-                # Generate temp password
                 alphabet = string.ascii_letters + string.digits
                 temp_password = ''.join(secrets.choice(alphabet) for i in range(10))
                 

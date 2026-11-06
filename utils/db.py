@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v1"
+_MODULE_VERSION = "2026.11.06.v2"
 
 # Limites estritos do Pool para ambiente Serverless (Streamlit Cloud + Neon PgBouncer)
 SERVERLESS_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "2"))
@@ -635,6 +635,57 @@ def is_sql_configured() -> bool:
     return get_db_engine() is not None
 
 
+def _normalize_user_row(u: dict) -> dict:
+    """Converte uma linha bruta da tabela `usuarios` para tipos Python seguros e padronizados."""
+    if not u:
+        return {}
+    u = dict(u)
+    u["username"] = _safe_str(u.get("username"), "")
+    u["email"] = _safe_str(u.get("email"), "")
+    u["cpf"] = _safe_str(u.get("cpf"), "")
+    u["password_hash"] = _safe_str(u.get("password_hash"), "")
+    u["id_transacao_pagamento"] = _safe_str(u.get("id_transacao_pagamento"), "")
+    u["lgpd_accepted_at"] = _safe_str(u.get("lgpd_accepted_at"), "")
+    u["lgpd_version"] = _safe_str(u.get("lgpd_version"), "1.0")
+    for _k in ("nome_completo", "telefone", "documento_tipo", "documento_enc", "nome_negocio", "segmento", "cidade_uf"):
+        u[_k] = _safe_str(u.get(_k), "")
+    mk_raw = u.get("marketing_optin", False)
+    u["marketing_optin"] = False if (mk_raw is None or pd.isna(mk_raw)) else bool(mk_raw)
+    is_adm_raw = u.get("is_admin", False)
+    u["is_admin"] = False if (is_adm_raw is None or pd.isna(is_adm_raw)) else bool(is_adm_raw)
+    u["creditos_disponiveis"] = _safe_int(u.get("creditos_disponiveis"), 1)
+    tx_raw = u.get("transacoes_processadas")
+    if tx_raw and not pd.isna(tx_raw):
+        try:
+            u["transacoes_processadas"] = json.loads(tx_raw) if isinstance(tx_raw, str) else list(tx_raw)
+        except Exception:
+            u["transacoes_processadas"] = []
+    else:
+        u["transacoes_processadas"] = []
+    return u
+
+
+def register_cache_clear_callback(cb):
+    """Registra funções de limpeza de cache (@st.cache_data) para invalidação automática após escritas SQL."""
+    callbacks = sys._rotulei_db_registry.setdefault("cache_clear_callbacks", [])
+    if cb not in callbacks:
+        callbacks.append(cb)
+
+
+def invalidate_db_caches():
+    """Limpa todos os caches de leitura de banco de dados após qualquer operação de escrita."""
+    try:
+        if exists():
+            get_user_credits_cached.clear()
+    except Exception:
+        pass
+    for cb in list(sys._rotulei_db_registry.get("cache_clear_callbacks", [])):
+        try:
+            cb()
+        except Exception:
+            pass
+
+
 def load_users_sql(db_lock) -> list:
     """
     Carrega todos os usuários do banco de dados relacional.
@@ -646,38 +697,228 @@ def load_users_sql(db_lock) -> list:
     with db_lock:
         try:
             df = _read_sql_df(engine, "SELECT * FROM usuarios")
-            users = df.to_dict(orient="records")
-            
-            # Converter campos JSON textuais e tratar NULL/NaN do pandas de volta para tipos Python seguros
-            for u in users:
-                u["username"] = _safe_str(u.get("username"), "")
-                u["email"] = _safe_str(u.get("email"), "")
-                u["cpf"] = _safe_str(u.get("cpf"), "")
-                u["password_hash"] = _safe_str(u.get("password_hash"), "")
-                u["id_transacao_pagamento"] = _safe_str(u.get("id_transacao_pagamento"), "")
-                u["lgpd_accepted_at"] = _safe_str(u.get("lgpd_accepted_at"), "")
-                u["lgpd_version"] = _safe_str(u.get("lgpd_version"), "1.0")
-                for _k in ("nome_completo", "telefone", "documento_tipo", "documento_enc", "nome_negocio", "segmento", "cidade_uf"):
-                    u[_k] = _safe_str(u.get(_k), "")
-                mk_raw = u.get("marketing_optin", False)
-                u["marketing_optin"] = False if (mk_raw is None or pd.isna(mk_raw)) else bool(mk_raw)
-                is_adm_raw = u.get("is_admin", False)
-                u["is_admin"] = False if (is_adm_raw is None or pd.isna(is_adm_raw)) else bool(is_adm_raw)
-                u["creditos_disponiveis"] = _safe_int(u.get("creditos_disponiveis"), 1)
-                tx_raw = u.get("transacoes_processadas")
-                if tx_raw and not pd.isna(tx_raw):
-                    try:
-                        u["transacoes_processadas"] = json.loads(tx_raw) if isinstance(tx_raw, str) else list(tx_raw)
-                    except Exception:
-                        u["transacoes_processadas"] = []
-                else:
-                    u["transacoes_processadas"] = []
-            return users
+            return [_normalize_user_row(u) for u in df.to_dict(orient="records")]
         except Exception as e:
             logger.error(f"Erro ao carregar usuários do banco SQL: {e}", exc_info=True)
             log_db_error("load_users_sql_error", e)
             st.error(f"Erro de Banco de Dados (load_users_sql): {e}")
             return None
+
+
+def get_user_sql(identifier: str, cpf_hash: str = "", cpf_digits: str = "") -> dict:
+    """
+    Busca pontualmente um único usuário no PostgreSQL por username, e-mail, nome completo ou CPF/CNPJ,
+    sem carregar a tabela inteira na memória.
+    """
+    engine = get_db_engine()
+    if not engine:
+        return None
+    ident_clean = (identifier or "").strip()
+    if not ident_clean and not cpf_hash and not cpf_digits:
+        return None
+    try:
+        if cpf_hash or cpf_digits:
+            df = _read_sql_df(
+                engine,
+                text("""
+                    SELECT * FROM usuarios
+                    WHERE LOWER(username) = LOWER(:ident)
+                       OR LOWER(email) = LOWER(:ident)
+                       OR LOWER(nome_completo) = LOWER(:ident)
+                       OR (cpf IS NOT NULL AND cpf <> '' AND (cpf = :cpf_hash OR cpf = :cpf_digits))
+                    LIMIT 1
+                """),
+                params={
+                    "ident": ident_clean,
+                    "cpf_hash": cpf_hash or "__none__",
+                    "cpf_digits": cpf_digits or "__none__",
+                },
+            )
+        else:
+            df = _read_sql_df(
+                engine,
+                text("""
+                    SELECT * FROM usuarios
+                    WHERE LOWER(username) = LOWER(:ident)
+                       OR LOWER(email) = LOWER(:ident)
+                       OR LOWER(nome_completo) = LOWER(:ident)
+                    LIMIT 1
+                """),
+                params={"ident": ident_clean},
+            )
+        if df.empty:
+            return None
+        return _normalize_user_row(df.iloc[0].to_dict())
+    except Exception as e:
+        logger.warning(f"Erro ao buscar usuário individual '{ident_clean}' no SQL: {e}")
+        return None
+
+
+def check_user_conflict_sql(
+    username: str = "",
+    email: str = "",
+    cpf_hash: str = "",
+    cpf_digits: str = "",
+    exclude_username: str = "",
+) -> str:
+    """
+    Verifica de forma leve no SQL se username, e-mail ou CPF/CNPJ já pertencem a outra conta.
+    Retorna 'username', 'email', 'cpf' ou '' (sem conflito).
+    """
+    engine = get_db_engine()
+    if not engine:
+        return ""
+    uname = (username or "").strip().lower()
+    em = (email or "").strip().lower()
+    excl = (exclude_username or "").strip().lower()
+    try:
+        df = _read_sql_df(
+            engine,
+            text("""
+                SELECT username, email, cpf FROM usuarios
+                WHERE (:uname <> '' AND LOWER(username) = :uname)
+                   OR (:em <> '' AND LOWER(email) = :em)
+                   OR (:ch <> '' AND cpf = :ch)
+                   OR (:cd <> '' AND cpf = :cd)
+            """),
+            params={
+                "uname": uname,
+                "em": em,
+                "ch": cpf_hash or "",
+                "cd": cpf_digits or "",
+            },
+        )
+        for _, row in df.iterrows():
+            r_user = _safe_str(row.get("username"), "").strip().lower()
+            if excl and r_user == excl:
+                continue
+            r_email = _safe_str(row.get("email"), "").strip().lower()
+            r_cpf = _safe_str(row.get("cpf"), "").strip()
+            if uname and r_user == uname:
+                return "username"
+            if em and r_email == em:
+                return "email"
+            if (cpf_hash and r_cpf == cpf_hash) or (cpf_digits and r_cpf == cpf_digits):
+                return "cpf"
+        return ""
+    except Exception as e:
+        logger.warning(f"Erro ao verificar conflito cadastral SQL: {e}")
+        return ""
+
+
+def upsert_single_user_sql(u: dict, db_lock=None, old_username: str = None) -> bool:
+    """
+    Insere ou atualiza ATOMICAMENTE apenas 1 usuário na tabela `usuarios` (sem tocar nas demais contas).
+    Se `old_username` for informado e diferente do novo `username`, renomeia a chave primária e
+    atualiza as receitas associadas na mesma transação.
+    """
+    engine = get_db_engine()
+    if not engine or not u or not u.get("username"):
+        return False
+
+    def _do_upsert():
+        try:
+            tx_json = json.dumps(u.get("transacoes_processadas", []))
+            new_uname = u["username"].strip()
+            old_uname = (old_username or "").strip()
+            with engine.begin() as conn:
+                if old_uname and old_uname.lower() != new_uname.lower():
+                    conn.execute(
+                        text("UPDATE usuarios SET username = :new_u WHERE LOWER(username) = LOWER(:old_u)"),
+                        {"new_u": new_uname, "old_u": old_uname},
+                    )
+                    conn.execute(
+                        text("UPDATE receitas SET username = :new_u WHERE LOWER(username) = LOWER(:old_u)"),
+                        {"new_u": new_uname, "old_u": old_uname},
+                    )
+                conn.execute(
+                    text("""
+                    INSERT INTO usuarios (username, email, cpf, password_hash, is_admin, creditos_disponiveis, transacoes_processadas, id_transacao_pagamento, lgpd_accepted_at, lgpd_version,
+                                          nome_completo, telefone, documento_tipo, documento_enc, nome_negocio, segmento, cidade_uf, marketing_optin)
+                    VALUES (:username, :email, :cpf, :password_hash, :is_admin, :creditos_disponiveis, :transacoes_processadas, :id_transacao_pagamento, :lgpd_accepted_at, :lgpd_version,
+                            :nome_completo, :telefone, :documento_tipo, :documento_enc, :nome_negocio, :segmento, :cidade_uf, :marketing_optin)
+                    ON CONFLICT (username) DO UPDATE SET
+                        nome_completo = EXCLUDED.nome_completo,
+                        telefone = EXCLUDED.telefone,
+                        documento_tipo = EXCLUDED.documento_tipo,
+                        documento_enc = EXCLUDED.documento_enc,
+                        nome_negocio = EXCLUDED.nome_negocio,
+                        segmento = EXCLUDED.segmento,
+                        cidade_uf = EXCLUDED.cidade_uf,
+                        marketing_optin = EXCLUDED.marketing_optin,
+                        email = EXCLUDED.email,
+                        cpf = EXCLUDED.cpf,
+                        password_hash = EXCLUDED.password_hash,
+                        is_admin = EXCLUDED.is_admin,
+                        creditos_disponiveis = EXCLUDED.creditos_disponiveis,
+                        transacoes_processadas = EXCLUDED.transacoes_processadas,
+                        id_transacao_pagamento = EXCLUDED.id_transacao_pagamento,
+                        lgpd_accepted_at = EXCLUDED.lgpd_accepted_at,
+                        lgpd_version = EXCLUDED.lgpd_version
+                    """),
+                    {
+                        "username": new_uname,
+                        "email": u.get("email", ""),
+                        "cpf": u.get("cpf", ""),
+                        "password_hash": u["password_hash"],
+                        "is_admin": bool(u.get("is_admin", False)),
+                        "creditos_disponiveis": int(u.get("creditos_disponiveis", 1)),
+                        "transacoes_processadas": tx_json,
+                        "id_transacao_pagamento": u.get("id_transacao_pagamento", ""),
+                        "lgpd_accepted_at": u.get("lgpd_accepted_at", ""),
+                        "lgpd_version": u.get("lgpd_version", ""),
+                        "nome_completo": u.get("nome_completo", "") or "",
+                        "telefone": u.get("telefone", "") or "",
+                        "documento_tipo": u.get("documento_tipo", "") or "",
+                        "documento_enc": u.get("documento_enc", "") or "",
+                        "nome_negocio": u.get("nome_negocio", "") or "",
+                        "segmento": u.get("segmento", "") or "",
+                        "cidade_uf": u.get("cidade_uf", "") or "",
+                        "marketing_optin": bool(u.get("marketing_optin", False)),
+                    },
+                )
+            invalidate_db_caches()
+            return True
+        except Exception as e:
+            logger.error(f"Erro em upsert_single_user_sql para '{u.get('username')}': {e}", exc_info=True)
+            log_db_error("upsert_single_user_sql_error", e)
+            return False
+
+    if db_lock is not None:
+        with db_lock:
+            return _do_upsert()
+    return _do_upsert()
+
+
+def delete_single_user_sql(username: str, db_lock=None) -> bool:
+    """Remove atomicamente um único usuário e suas receitas associadas no banco SQL."""
+    engine = get_db_engine()
+    uname = (username or "").strip()
+    if not engine or not uname:
+        return False
+
+    def _do_delete():
+        try:
+            with engine.begin() as conn:
+                res = conn.execute(
+                    text("DELETE FROM usuarios WHERE LOWER(username) = LOWER(:u)"),
+                    {"u": uname},
+                )
+                conn.execute(
+                    text("DELETE FROM receitas WHERE LOWER(username) = LOWER(:u)"),
+                    {"u": uname},
+                )
+            invalidate_db_caches()
+            return res.rowcount > 0
+        except Exception as e:
+            logger.error(f"Erro ao deletar usuário '{uname}' no SQL: {e}", exc_info=True)
+            log_db_error("delete_single_user_sql_error", e)
+            return False
+
+    if db_lock is not None:
+        with db_lock:
+            return _do_delete()
+    return _do_delete()
 
 
 def _fetch_user_credits(username: str) -> dict:
@@ -714,7 +955,8 @@ else:
 
 def save_users_sql(users: list, db_lock) -> bool:
     """
-    Salva a lista completa de usuários no banco de dados relacional.
+    Sincroniza uma lista de usuários no banco de dados relacional via UPSERT seguro
+    (sem apagar contas concorrentes recém-criadas por outras sessões).
     Invalida o cache de leitura após qualquer escrita bem-sucedida.
     """
     engine = get_db_engine()
@@ -724,19 +966,6 @@ def save_users_sql(users: list, db_lock) -> bool:
     with db_lock:
         try:
             with engine.begin() as conn:
-                # 1. Deletar apenas os usuários que não estão na nova lista
-                usernames = [u["username"] for u in users]
-                if usernames:
-                    placeholders = ", ".join(f":u{idx}" for idx in range(len(usernames)))
-                    params = {f"u{idx}": u.lower() for idx, u in enumerate(usernames)}
-                    conn.execute(
-                        text(f"DELETE FROM usuarios WHERE LOWER(username) NOT IN ({placeholders})"),
-                        params
-                    )
-                else:
-                    conn.execute(text("DELETE FROM usuarios"))
-                
-                # 2. Inserir ou atualizar (UPSERT)
                 for u in users:
                     tx_json = json.dumps(u.get("transacoes_processadas", []))
                     conn.execute(
@@ -786,12 +1015,7 @@ def save_users_sql(users: list, db_lock) -> bool:
                         }
                     )
 
-            # Invalidar cache de leitura após escrita bem-sucedida
-            try:
-                if exists():
-                    get_user_credits_cached.clear()
-            except Exception:
-                pass
+            invalidate_db_caches()
             return True
         except Exception as e:
             logger.error(f"Erro ao gravar usuários no banco SQL: {e}", exc_info=True)
@@ -851,12 +1075,7 @@ def add_user_credits_sql(target_identifier: str, credits_to_add: int, payment_id
                     }
                 )
 
-            # Invalidar cache do Streamlit se disponível
-            try:
-                if exists():
-                    get_user_credits_cached.clear()
-            except Exception:
-                pass
+            invalidate_db_caches()
 
             return True, f"Sucesso: Adicionados {credits_to_add} créditos para o usuário '{username}' (Transação: {payment_id})."
         except Exception as e:
@@ -911,11 +1130,7 @@ def consume_user_credit_sql(username: str, db_lock) -> tuple:
 
                 remaining = current_credits - 1
 
-            try:
-                if exists():
-                    get_user_credits_cached.clear()
-            except Exception:
-                pass
+            invalidate_db_caches()
 
             logger.info(f"Crédito debitado atomicamente via SQL para '{db_uname}'. Restantes: {remaining}")
             return True, f"Crédito debitado com sucesso. Restantes: {remaining}"
@@ -1044,6 +1259,7 @@ def save_recipe_sql(name: str, recipe_data: dict, db_lock) -> bool:
                         "preco_venda_praticado": float(recipe_data.get("preco_venda_praticado", 0.0))
                     }
                 )
+            invalidate_db_caches()
             return True
         except Exception as e:
             logger.error(f"Erro ao salvar receita no banco SQL: {e}", exc_info=True)
@@ -1066,6 +1282,7 @@ def delete_recipe_sql(name: str, username: str, db_lock) -> bool:
                     text("DELETE FROM receitas WHERE LOWER(nome) = LOWER(:nome) AND LOWER(username) = LOWER(:username)"),
                     {"nome": name, "username": username}
                 )
+            invalidate_db_caches()
             return True
         except Exception as e:
             logger.error(f"Erro ao deletar receita do banco SQL: {e}", exc_info=True)
@@ -1182,6 +1399,7 @@ def save_custom_ingredient_sql(item: dict) -> bool:
                     "nutrientes": nut_json,
                 }
             )
+        invalidate_db_caches()
         return True
     except Exception as e:
         logger.error(f"Erro ao salvar ingrediente customizado no SQL: {e}", exc_info=True)
