@@ -210,6 +210,16 @@ def nome_rotulo(nome_tecnico: str) -> str:
         nome_tecnico = nome_tecnico.replace(_pref, "").strip()
     if " (Rende " in nome_tecnico:
         nome_tecnico = nome_tecnico.split(" (Rende ")[0].strip()
+
+    # Remover observações entre parênteses de aliases amigáveis, ex: "(tipo Ninho)", "(p/ Bolo)"
+    nome_sem_parenteses = re.sub(r"\s*\([^)]*\)", "", nome_tecnico).strip()
+    if nome_sem_parenteses:
+        nome_tecnico = nome_sem_parenteses
+
+    # Se for alias com barra " / " (ex: "Coco Ralado / Coco Fresco"), manter o nome comercial principal
+    if " / " in nome_tecnico:
+        nome_tecnico = nome_tecnico.split(" / ")[0].strip()
+
     chave = nome_tecnico.lower()
 
     # 1. Verificação no OVERRIDE_MAP (prioridade máxima)
@@ -227,7 +237,8 @@ def nome_rotulo(nome_tecnico: str) -> str:
     # 3. Remoção de sufixos técnicos via Regex
     nome_limpo = _SUFFIXES_PATTERN.sub("", nome_invertido).strip()
 
-    # 4. Limpar vírgulas e espaços residuais
+    # 4. Limpar parênteses vazios, vírgulas e espaços residuais
+    nome_limpo = re.sub(r"\s*\([^)]*\)", "", nome_limpo).strip()
     nome_limpo = re.sub(r"\s*,\s*", " ", nome_limpo).strip()
     nome_limpo = re.sub(r"\s{2,}", " ", nome_limpo).strip()
 
@@ -262,12 +273,15 @@ def gerar_lista_ingredientes_rotulo(recipe: list[dict]) -> str:
     sorted_recipe = sorted(recipe, key=lambda x: x.get("w", 0), reverse=True)
 
     nomes = []
+    seen = set()
     for ing in sorted_recipe:
-        nome_tecnico = ing.get("d", "")
-        nome_limpo = nome_rotulo(nome_tecnico)
-        nomes.append(nome_limpo.upper())
+        nome_tecnico = ing.get("d_orig") or ing.get("d", "")
+        nome_limpo = nome_rotulo(nome_tecnico).upper()
+        if nome_limpo and nome_limpo not in seen:
+            nomes.append(nome_limpo)
+            seen.add(nome_limpo)
 
-    return ", ".join(nomes) + "."
+    return ", ".join(nomes) + "." if nomes else ""
 
 
 if __name__ == "__main__":

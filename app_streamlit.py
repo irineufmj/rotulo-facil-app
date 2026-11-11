@@ -60,7 +60,7 @@ except ImportError:
             "hint": "Dica de medidas: 1 colher de sopa = ~15g | 1 xícara = ~150g | 1 pacote de 1 kg = 1000g"
         }
 from utils.calculations import (
-    get_num_val, round_anvisa, VDR,
+    get_num_val, round_anvisa, round_anvisa_num, calculate_vd_percent, format_anvisa_portions_per_package, VDR,
     calculate_financial_breakdown, calculate_cmv, calculate_ingredient_cost,
     convert_package_to_cost_kg, calculate_hourly_labor_rate, calculate_overhead_rate_pct,
     calculate_monthly_sales_goal, calculate_bulk_discount_simulation
@@ -187,8 +187,14 @@ if "yield_units" not in st.session_state:
 def _find_food_item(foods_list, code, fallback_desc, fallback_nut):
     for f in foods_list:
         if f.get("c") == code:
-            return f
-    return {"c": code, "d": fallback_desc, "f": "TACO", "n": fallback_nut}
+            merged_n = dict(fallback_nut or {})
+            for k, v in (f.get("n") or {}).items():
+                if v is not None and str(v).strip().lower() not in ("", "na", "nd", "tr", "*", "-"):
+                    merged_n[k] = v
+            f_copy = dict(f)
+            f_copy["n"] = merged_n
+            return f_copy
+    return {"c": code, "d": fallback_desc, "f": "TACO", "n": dict(fallback_nut or {})}
 
 def get_model_recipes(foods_list):
     """
@@ -368,15 +374,15 @@ def build_anvisa_pdf_bytes(
     table_data = [
         [Paragraph("<b>INFORMAÇÃO NUTRICIONAL</b>", ParagraphStyle('H', parent=body_style, fontName='Helvetica-Bold', fontSize=11)), "", "", ""],
         [Paragraph(f"{n_porcoes_str} porções por embalagem<br/>Porção: {int(portion_size)} {col_unit} ({safe_case_measure})", body_style), "", "", ""],
-        [Paragraph("<b>Nutrientes</b>", body_style), Paragraph(f"<b>{col_100_label}</b>", body_style), Paragraph(f"<b>{col_portion_label}</b>", body_style), Paragraph("<b>%VD*</b>", body_style)],
+        [Paragraph("", body_style), Paragraph(f"<b>{col_100_label}</b>", body_style), Paragraph(f"<b>{col_portion_label}</b>", body_style), Paragraph("<b>%VD*</b>", body_style)],
         [Paragraph("Valor energético (kcal)", body_style), display_100g['Energia (kcal)'], display_portion['Energia (kcal)'], str(int(vd_percents['Energia (kcal)']))],
         [Paragraph("Carboidratos (g)", body_style), display_100g['Carboidrato total (g)'], display_portion['Carboidrato total (g)'], str(int(vd_percents['Carboidrato total (g)']))],
         [Paragraph("&nbsp;&nbsp;Açúcares totais (g)", body_style), display_100g['Açúcares totais (g)'], display_portion['Açúcares totais (g)'], "-"],
-        [Paragraph("&nbsp;&nbsp;Açúcares adicionados (g)", body_style), display_100g['Açúcares adicionados (g)'], display_portion['Açúcares adicionados (g)'], str(int(vd_percents['Açúcares adicionados (g)']))],
+        [Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;Açúcares adicionados (g)", body_style), display_100g['Açúcares adicionados (g)'], display_portion['Açúcares adicionados (g)'], str(int(vd_percents['Açúcares adicionados (g)']))],
         [Paragraph("Proteínas (g)", body_style), display_100g['Proteína (g)'], display_portion['Proteína (g)'], str(int(vd_percents['Proteína (g)']))],
         [Paragraph("Gorduras totais (g)", body_style), display_100g['Lipídios (g)'], display_portion['Lipídios (g)'], str(int(vd_percents['Lipídios (g)']))],
         [Paragraph("&nbsp;&nbsp;Gorduras saturadas (g)", body_style), display_100g['Gorduras saturadas (g)'], display_portion['Gorduras saturadas (g)'], str(int(vd_percents['Gorduras saturadas (g)']))],
-        [Paragraph("&nbsp;&nbsp;Gorduras trans (g)", body_style), display_100g['Gorduras trans (g)'], display_portion['Gorduras trans (g)'], "-"],
+        [Paragraph("&nbsp;&nbsp;Gorduras trans (g)", body_style), display_100g['Gorduras trans (g)'], display_portion['Gorduras trans (g)'], str(int(vd_percents.get('Gorduras trans (g)', 0)))],
         [Paragraph("Fibra alimentar (g)", body_style), display_100g['Fibra alimentar (g)'], display_portion['Fibra alimentar (g)'], str(int(vd_percents['Fibra alimentar (g)']))],
         [Paragraph("Sódio (mg)", body_style), display_100g['Sódio (mg)'], display_portion['Sódio (mg)'], str(int(vd_percents['Sódio (mg)']))],
         [Paragraph("<font size=7>* Percentual de valores diários fornecidos pela porção.</font>", body_style), "", "", ""]
@@ -1388,6 +1394,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             st.session_state.recipe.append({
                 "c": selected_recipe_food["c"],
                 "d": friendly_name,
+                "d_orig": selected_recipe_food.get("d", friendly_name),
                 "f": selected_recipe_food["f"],
                 "w": ing_weight,
                 "cost_kg": ing_cost_init,
@@ -1417,10 +1424,11 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 q_use_now = q_c4.number_input("Quanto vai usar agora? (g/ml):", min_value=1.0, value=100.0, step=10.0)
 
                 st.markdown("**📊 Tabela Nutricional do Rótulo (opcional — preencha apenas se for gerar rótulo ANVISA):**")
-                n_col0, n_col1, n_col2, n_col3, n_col4 = st.columns(5)
+                n_col0, n_col1, n_col2, n_col3_t, n_col3, n_col4 = st.columns(6)
                 q_portion = n_col0.number_input("Porção do rótulo (g):", min_value=1.0, value=100.0, step=10.0)
                 q_kcal = n_col1.number_input("Energia (kcal):", min_value=0.0, value=0.0, step=10.0)
                 q_carb = n_col2.number_input("Carboidratos (g):", min_value=0.0, value=0.0, step=1.0)
+                q_sug_tot = n_col3_t.number_input("Açúc. Totais (g):", min_value=0.0, value=0.0, step=1.0)
                 q_sug_add = n_col3.number_input("Açúc. Adicionados (g):", min_value=0.0, value=0.0, step=1.0)
                 q_prot = n_col4.number_input("Proteínas (g):", min_value=0.0, value=0.0, step=1.0)
 
@@ -1446,6 +1454,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                             portion_ref=q_portion,
                             kcal_portion=q_kcal,
                             carbs_portion=q_carb,
+                            sug_tot_portion=q_sug_tot,
                             sug_add_portion=q_sug_add,
                             prot_portion=q_prot,
                             fat_portion=q_fat,
@@ -1543,7 +1552,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
         )
 
         soma_pesos_brutos = max(1.0, sum(float(i["w"]) for i in st.session_state.recipe))
-        default_units = max(1, int(round(st.session_state.weight_final / st.session_state.peso_embalagem))) if st.session_state.peso_embalagem > 0 else int(max(1, st.session_state.yield_units))
+        default_units = max(1, int(st.session_state.get("yield_units", 25) or 25))
 
         col_q1, col_q2 = st.columns(2)
         yield_units_val = col_q1.number_input(
@@ -1562,6 +1571,17 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             key="wiz_custo_emb",
             help="Preço de 1 forminha, 1 saquinho ou 1 pote com tampa. Se não usar embalagem, deixe 0,00."
         )
+
+        peso_unit_estimado = max(1.0, round(soma_pesos_brutos / max(1, int(yield_units_val)), 1))
+        if (
+            st.session_state.get("_last_wiz_yield_units") != int(yield_units_val)
+            or st.session_state.get("_last_wiz_sum_bruto") != soma_pesos_brutos
+            or st.session_state.get("peso_embalagem", 0.0) <= 0.0
+        ):
+            st.session_state.peso_embalagem = peso_unit_estimado
+            st.session_state["wiz_p_emb"] = peso_unit_estimado
+            st.session_state["_last_wiz_yield_units"] = int(yield_units_val)
+            st.session_state["_last_wiz_sum_bruto"] = soma_pesos_brutos
 
         st.markdown("#### 💰 Quanto você quer ganhar de lucro livre?")
         opcoes_lucro = {
@@ -2066,7 +2086,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             sug_add = get_num_val(ing["n"], "Açúcares adicionados (g)", ing["d"])
             raw_totals["Açúcares adicionados (g)"] += sug_add * factor
             sug_tot = get_num_val(ing["n"], "Açúcares totais (g)", ing["d"])
-            if sug_tot == 0.0 and sug_add > 0.0:
+            if sug_tot < sug_add:
                 sug_tot = sug_add
             raw_totals["Açúcares totais (g)"] += sug_tot * factor
             raw_totals["Proteína (g)"] += get_num_val(ing["n"], "Proteína (g)", ing["d"]) * factor
@@ -2085,20 +2105,24 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             totals_portion[key] = (totals_100g[key] * portion_size) / 100.0
             
         vd_percents = {}
-        for key, vdr_val in VDR.items():
-            vd_percents[key] = round((totals_portion[key] / vdr_val) * 100)
+        for key in VDR.keys():
+            vd_percents[key] = calculate_vd_percent(totals_portion[key], key)
             
+        dec_100_acucar = round_anvisa_num(totals_100g["Açúcares adicionados (g)"], "Açúcares adicionados (g)")
+        dec_100_gordura = round_anvisa_num(totals_100g["Gorduras saturadas (g)"], "Gorduras saturadas (g)")
+        dec_100_sodio = round_anvisa_num(totals_100g["Sódio (mg)"], "Sódio (mg)")
+
         if product_type == "Líquido":
-            alto_acucar = totals_100g["Açúcares adicionados (g)"] >= 7.5
-            alto_gordura = totals_100g["Gorduras saturadas (g)"] >= 3.0
-            alto_sodio = totals_100g["Sódio (mg)"] >= 300.0
+            alto_acucar = dec_100_acucar >= 7.5
+            alto_gordura = dec_100_gordura >= 3.0
+            alto_sodio = dec_100_sodio >= 300.0
             col_100_label = "100 ml"
             col_portion_label = f"{int(portion_size)} ml"
             col_unit = "ml"
         else:
-            alto_acucar = totals_100g["Açúcares adicionados (g)"] >= 15.0
-            alto_gordura = totals_100g["Gorduras saturadas (g)"] >= 6.0
-            alto_sodio = totals_100g["Sódio (mg)"] >= 600.0
+            alto_acucar = dec_100_acucar >= 15.0
+            alto_gordura = dec_100_gordura >= 6.0
+            alto_sodio = dec_100_sodio >= 600.0
             col_100_label = "100 g"
             col_portion_label = f"{int(portion_size)} g"
             col_unit = "g"
@@ -2114,6 +2138,33 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             if st.session_state.nome_produto:
                 safe_nome_produto = html.escape(st.session_state.nome_produto)
                 st.markdown(f"##### Produto: **{safe_nome_produto}**")
+
+            # Validações de integridade físico-química e de cadastro (L-03)
+            soma_macro_100g = (
+                totals_100g.get("Carboidrato total (g)", 0.0)
+                + totals_100g.get("Proteína (g)", 0.0)
+                + totals_100g.get("Lipídios (g)", 0.0)
+                + totals_100g.get("Fibra alimentar (g)", 0.0)
+            )
+            if soma_macro_100g > 100.5:
+                st.warning(
+                    f"⚠️ **Atenção ao Rendimento Final ({weight_final:.0f} g):** A soma de macronutrientes por 100g "
+                    f"({soma_macro_100g:.1f} g) ultrapassa 100g. Verifique se o **Rendimento Lote (g/ml)** não está menor que a massa seca da receita."
+                )
+
+            zero_custom_ings = [
+                ing["d"] for ing in st.session_state.recipe
+                if ing.get("f") == "CADASTRO"
+                and get_num_val(ing.get("n", {}), "Energia (kcal)", ing["d"]) == 0.0
+                and get_num_val(ing.get("n", {}), "Carboidrato total (g)", ing["d"]) == 0.0
+                and get_num_val(ing.get("n", {}), "Proteína (g)", ing["d"]) == 0.0
+                and get_num_val(ing.get("n", {}), "Lipídios (g)", ing["d"]) == 0.0
+            ]
+            if zero_custom_ings:
+                st.warning(
+                    f"⚠️ **Insumo(s) cadastrado(s) sem tabela nutricional:** {', '.join(zero_custom_ings)}. "
+                    "Para que o rótulo ANVISA fique exato, preencha os nutrientes do rótulo do fornecedor na aba **Cadastrar Novo Produto**."
+                )
             
             st.divider()
             
@@ -2123,16 +2174,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                 lupa_content_html = '<div style="height: 180px;"></div>'
 
             ref_weight = peso_embalagem if peso_embalagem > 0.0 else weight_final
-            n_raw = ref_weight / portion_size
-            if n_raw < 1.5:
-                n_porcoes_str = "Cerca de 1"
-            elif n_raw <= 10.0:
-                val_rounded = round(n_raw * 2) / 2
-                n_porcoes_str = f"Cerca de {str(val_rounded).replace('.', ',')}"
-                if n_porcoes_str.endswith(',0'):
-                    n_porcoes_str = n_porcoes_str[:-2]
-            else:
-                n_porcoes_str = f"Cerca de {int(round(n_raw))}"
+            n_porcoes_str = format_anvisa_portions_per_package(ref_weight, portion_size)
             
             safe_case_measure = html.escape(case_measure)
             
@@ -2154,7 +2196,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                             </td>
                         </tr>
                         <tr style="font-weight: bold; text-align: center; background-color: #eee;">
-                             <td>Colunas</td>
+                             <td></td>
                              <td style="text-align: right; width: 60px;">{col_100_label}</td>
                              <td style="text-align: right; width: 70px;">{col_portion_label}</td>
                             <td style="text-align: right; width: 50px;">%VD*</td>
@@ -2178,7 +2220,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                             <td class="num">-</td>
                         </tr>
                         <tr class="indent-row">
-                            <td class="name">Açúcares adicionados (g)</td>
+                            <td class="name" style="padding-left: 26px;">Açúcares adicionados (g)</td>
                             <td class="num">{display_100g['Açúcares adicionados (g)']}</td>
                             <td class="num">{display_portion['Açúcares adicionados (g)']}</td>
                             <td class="num">{int(vd_percents['Açúcares adicionados (g)'])}</td>
@@ -2205,7 +2247,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                             <td class="name">Gorduras trans (g)</td>
                             <td class="num">{display_100g['Gorduras trans (g)']}</td>
                             <td class="num">{display_portion['Gorduras trans (g)']}</td>
-                            <td class="num">-</td>
+                            <td class="num">{int(vd_percents.get('Gorduras trans (g)', 0))}</td>
                         </tr>
                         <tr>
                             <td>Fibra alimentar (g)</td>
@@ -2602,9 +2644,10 @@ if st.session_state.selected_page == "Cadastrar Novo Ingrediente":
         
         st.markdown("##### 📊 Nutrientes por Porção (opcional — necessário apenas se for gerar rótulo ANVISA):")
         
-        col_n1, col_n2, col_n3 = st.columns(3)
+        col_n1, col_n2, col_n3_t, col_n3 = st.columns(4)
         kcal_portion = col_n1.number_input("Valor Energético (kcal):", min_value=0.0, value=0.0, step=5.0)
         carbs_portion = col_n2.number_input("Carboidratos (g):", min_value=0.0, value=0.0, step=1.0)
+        sug_tot_portion = col_n3_t.number_input("Açúcares Totais (g):", min_value=0.0, value=0.0, step=1.0)
         sug_add_portion = col_n3.number_input("Açúcares Adicionados (g):", min_value=0.0, value=0.0, step=1.0)
         
         col_n4, col_n5, col_n6 = st.columns(3)
@@ -2630,6 +2673,7 @@ if st.session_state.selected_page == "Cadastrar Novo Ingrediente":
                     portion_ref=portion_ref,
                     kcal_portion=kcal_portion,
                     carbs_portion=carbs_portion,
+                    sug_tot_portion=sug_tot_portion,
                     sug_add_portion=sug_add_portion,
                     prot_portion=prot_portion,
                     fat_portion=fat_portion,

@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v2"
+_MODULE_VERSION = "2026.11.11.v3"
 _INTERNAL_LOCK = threading.RLock()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,8 +56,11 @@ def load_unified_data():
                     nut_dict[col] = float(row[col])
             
             if "Carboidrato total (g)" in nut_dict:
-                nut_dict["Carboidrato disponível (g)"] = nut_dict["Carboidrato total (g)"]
-                nut_dict["Açúcares totais (g)"] = nut_dict.get("Açúcares adicionados (g)", 0.0)
+                nut_dict["Carboidrato disponível (g)"] = nut_dict.get("Carboidrato disponível (g)", nut_dict["Carboidrato total (g)"])
+                nut_dict["Açúcares totais (g)"] = max(
+                    float(nut_dict.get("Açúcares totais (g)", 0.0) or 0.0),
+                    float(nut_dict.get("Açúcares adicionados (g)", 0.0) or 0.0),
+                )
             
             foods.append({
                 "c": row["codigo"],
@@ -278,6 +281,7 @@ def get_recipes_as_ingredients(db_lock, username):
     em insumos prontos para uso em outras receitas, trazendo seu peso de rendimento e custo real.
     """
     from utils.data_loader import load_saved_recipes
+    from utils.calculations import get_num_val, NUTRIENT_KEY_MAPPING
     recipes = load_saved_recipes(db_lock, username)
     recipe_ingredients = []
     for idx, r in enumerate(recipes):
@@ -291,7 +295,8 @@ def get_recipes_as_ingredients(db_lock, username):
             if w_final <= 0:
                 continue
             
-            raw_totals = {}
+            raw_totals = {k: 0.0 for k in NUTRIENT_KEY_MAPPING.keys()}
+            raw_totals["Açúcares totais (g)"] = 0.0
             total_cost = 0.0
             for ing in ings:
                 w_item = float(ing.get("w", 0.0) or 0.0)
@@ -299,14 +304,20 @@ def get_recipes_as_ingredients(db_lock, username):
                 cost_kg_item = float(ing.get("cost_kg", 0.0) or 0.0)
                 factor = w_item / 100.0
                 total_cost += cost_kg_item * (w_item / 1000.0) * yf_item
-                
-                for key, val in (ing.get("n") or {}).items():
-                    if isinstance(val, (int, float)):
-                        raw_totals[key] = raw_totals.get(key, 0.0) + (val * factor)
+
+                ing_n = ing.get("n") or {}
+                ing_d = ing.get("d", "")
+                for key in NUTRIENT_KEY_MAPPING.keys():
+                    val = get_num_val(ing_n, key, ing_d)
+                    if key == "Açúcares totais (g)":
+                        sug_add_item = get_num_val(ing_n, "Açúcares adicionados (g)", ing_d)
+                        val = max(val, sug_add_item)
+                    raw_totals[key] = raw_totals.get(key, 0.0) + (val * factor)
                         
             n_100g = {}
             for key, val in raw_totals.items():
                 n_100g[key] = (val / w_final) * 100.0
+            n_100g["Carboidrato disponível (g)"] = n_100g.get("Carboidrato total (g)", 0.0)
                 
             n_100g["Custo (R$/kg)"] = (total_cost / w_final) * 1000.0
             rec_name = (r.get("nome") or r.get("nome_produto") or f"Receita {idx+1}").strip()
@@ -349,16 +360,22 @@ def get_custom_ingredients_list(username: str = None) -> list:
                 code = str(row.get("codigo", "")).strip()
                 if not code or code in seen_codes:
                     continue
+                row_user = str(row.get("username", "") or "").strip() if "username" in custom_df.columns and pd.notna(row.get("username")) else ""
+                if username and row_user and row_user.lower() != username.strip().lower():
+                    continue
                 nut_dict = {}
                 for col in custom_df.columns:
-                    if col not in ["codigo", "descricao", "classe", "fonte", "peso_embalagem", "preco_embalagem"] and pd.notna(row[col]):
+                    if col not in ["codigo", "username", "descricao", "classe", "fonte", "peso_embalagem", "preco_embalagem"] and pd.notna(row[col]):
                         try:
                             nut_dict[col] = float(row[col])
                         except Exception:
                             pass
                 if "Carboidrato total (g)" in nut_dict:
-                    nut_dict["Carboidrato disponível (g)"] = nut_dict["Carboidrato total (g)"]
-                    nut_dict["Açúcares totais (g)"] = nut_dict.get("Açúcares adicionados (g)", 0.0)
+                    nut_dict["Carboidrato disponível (g)"] = nut_dict.get("Carboidrato disponível (g)", nut_dict["Carboidrato total (g)"])
+                    nut_dict["Açúcares totais (g)"] = max(
+                        float(nut_dict.get("Açúcares totais (g)", 0.0) or 0.0),
+                        float(nut_dict.get("Açúcares adicionados (g)", 0.0) or 0.0),
+                    )
                 pkg_g = float(row.get("peso_embalagem", 1000.0) if "peso_embalagem" in custom_df.columns and pd.notna(row.get("peso_embalagem")) else 1000.0)
                 cost_kg = float(nut_dict.get("Custo (R$/kg)", 0.0) or 0.0)
                 price = float(row.get("preco_embalagem", 0.0) if "preco_embalagem" in custom_df.columns and pd.notna(row.get("preco_embalagem")) else round(cost_kg * (pkg_g / 1000.0), 2))
@@ -390,6 +407,7 @@ def save_custom_ingredient(
     portion_ref: float = 100.0,
     kcal: float = 0.0,
     carbs: float = 0.0,
+    sug_tot: float = 0.0,
     sug_add: float = 0.0,
     prot: float = 0.0,
     fat: float = 0.0,
@@ -413,6 +431,7 @@ def save_custom_ingredient(
 
     kcal_v = kwargs.get("kcal_portion", kcal)
     carbs_v = kwargs.get("carbs_portion", carbs)
+    sug_tot_v = kwargs.get("sug_tot_portion", sug_tot)
     sug_v = kwargs.get("sug_add_portion", sug_add)
     prot_v = kwargs.get("prot_portion", prot)
     fat_v = kwargs.get("fat_portion", fat)
@@ -421,12 +440,15 @@ def save_custom_ingredient(
     fiber_v = kwargs.get("fiber_portion", fiber)
     sodium_v = kwargs.get("sodium_portion", sodium)
 
+    sug_add_final = round(float(sug_v or 0.0) * factor, 2)
+    sug_tot_final = max(sug_add_final, round(float(sug_tot_v or 0.0) * factor, 2))
+
     nut_dict = {
         "Energia (kcal)": round(float(kcal_v or 0.0) * factor, 2),
         "Carboidrato total (g)": round(float(carbs_v or 0.0) * factor, 2),
         "Carboidrato disponível (g)": round(float(carbs_v or 0.0) * factor, 2),
-        "Açúcares adicionados (g)": round(float(sug_v or 0.0) * factor, 2),
-        "Açúcares totais (g)": round(float(sug_v or 0.0) * factor, 2),
+        "Açúcares adicionados (g)": sug_add_final,
+        "Açúcares totais (g)": sug_tot_final,
         "Proteína (g)": round(float(prot_v or 0.0) * factor, 2),
         "Lipídios (g)": round(float(fat_v or 0.0) * factor, 2),
         "Gorduras saturadas (g)": round(float(sat_v or 0.0) * factor, 2),
@@ -464,6 +486,7 @@ def save_custom_ingredient(
             custom_df = pd.DataFrame()
         new_row = pd.DataFrame([{
             "codigo": new_code,
+            "username": username or "",
             "descricao": clean_name,
             "classe": "Cadastrado Manualmente",
             "fonte": "CADASTRO",

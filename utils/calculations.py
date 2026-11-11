@@ -1,6 +1,7 @@
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
-_MODULE_VERSION = "2026.11.06.v2"
+_MODULE_VERSION = "2026.11.11.v3"
 
 VDR = {
     "Energia (kcal)": 2000.0,
@@ -9,97 +10,198 @@ VDR = {
     "Proteína (g)": 50.0,
     "Lipídios (g)": 65.0,
     "Gorduras saturadas (g)": 20.0,
+    "Gorduras trans (g)": 2.0,
     "Fibra alimentar (g)": 25.0,
     "Sódio (mg)": 2000.0
 }
 
 NUTRIENT_KEY_MAPPING = {
     "Energia (kcal)": ["Energia (kcal)"],
-    "Carboidrato total (g)": ["Carboidrato total (g)", "Carboidrato disponível (g)", "Carboidrato disponí\xadvel (g)"],
-    "Açúcares adicionados (g)": ["Açúcares adicionados (g)", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
-    "Açúcares totais (g)": ["Açúcares totais (g)", "Açúcares totais", "Açúcar de adição (g)", "Açúcar de adi\u00e7\u00e3o (g)", "Acar de adio (g)"],
-    "Proteína (g)": ["Proteína (g)", "Prote\u00edna (g)", "Protena (g)"],
-    "Lipídios (g)": ["Lipídios (g)", "Lip\u00eddios (g)", "Lipdios (g)"],
-    "Gorduras saturadas (g)": ["Gorduras saturadas (g)", "Ácidos graxos saturados (g)", "\u00c1cidos graxos saturados (g)", "cidos graxos saturados (g)"],
-    "Gorduras trans (g)": ["Gorduras trans (g)", "Ácidos graxos trans (g)", "\u00c1cidos graxos trans (g)", "cidos graxos trans (g)"],
+    "Carboidrato total (g)": [
+        "Carboidrato disponível (g)",
+        "Carboidrato disponÃ\xadvel (g)",
+        "Carboidrato disponí\xadvel (g)",
+        "Carboidrato total (g)",
+    ],
+    "Açúcares adicionados (g)": [
+        "Açúcares adicionados (g)",
+        "Açúcar de adição (g)",
+        "Açúcar de adi\u00e7\u00e3o (g)",
+        "Acar de adio (g)",
+    ],
+    "Açúcares totais (g)": [
+        "Açúcares totais (g)",
+        "Açúcar total (g)",
+        "Açúcares totais",
+        "Açúcar de adição (g)",
+        "Açúcar de adi\u00e7\u00e3o (g)",
+        "Acar de adio (g)",
+    ],
+    "Proteína (g)": ["Proteína (g)", "Prote\u00edna (g)", "ProteÃ\xadna (g)", "Protena (g)"],
+    "Lipídios (g)": ["Lipídios (g)", "Lip\u00eddios (g)", "LipÃ\xaddios (g)", "Lipdios (g)"],
+    "Gorduras saturadas (g)": [
+        "Gorduras saturadas (g)",
+        "Ácidos graxos saturados (g)",
+        "\u00c1cidos graxos saturados (g)",
+        "cidos graxos saturados (g)",
+    ],
+    "Gorduras trans (g)": [
+        "Gorduras trans (g)",
+        "Ácidos graxos trans (g)",
+        "\u00c1cidos graxos trans (g)",
+        "cidos graxos trans (g)",
+    ],
     "Fibra alimentar (g)": ["Fibra alimentar (g)"],
-    "Sódio (mg)": ["Sódio (mg)", "S\u00f3dio (mg)", "Sdio (mg)"]
+    "Sódio (mg)": ["Sódio (mg)", "S\u00f3dio (mg)", "SÃ³dio (mg)", "Sdio (mg)"]
 }
 
+_PURE_SUGAR_PREFIXES = (
+    "açúcar",
+    "acucar",
+    "açucar",
+    "mel,",
+    "mel ",
+    "mel de abelha",
+    "melaço",
+    "melaco",
+    "glucose",
+    "glicose",
+    "xarope de glicose",
+    "xarope de milho",
+    "rapadura",
+)
+
+_SUGAR_FREE_TERMS = (
+    "s/ açúcar",
+    "s/ acucar",
+    "sem açúcar",
+    "sem acucar",
+    "zero açúcar",
+    "zero acucar",
+    "diet",
+)
+
+
+def _dec_round(val: float, decs: int) -> float:
+    d = Decimal(f"{float(val):.10f}")
+    prec = Decimal('1') if decs == 0 else Decimal('.' + '0' * decs)
+    return float(d.quantize(prec, rounding=ROUND_HALF_UP))
+
+
 def get_num_val(nutrients_dict, key, food_desc=""):
+    if not nutrients_dict:
+        return 0.0
     candidates = NUTRIENT_KEY_MAPPING.get(key, [key])
     val = None
-    
+
     for cand in candidates:
-        if cand in nutrients_dict:
-            val = nutrients_dict[cand]
+        if cand in nutrients_dict and nutrients_dict[cand] is not None:
+            cand_val = nutrients_dict[cand]
+            if isinstance(cand_val, str) and cand_val.strip().lower() in ["tr", "nd", "na", "", "-", "n.d.", "*"]:
+                continue
+            val = cand_val
             break
-            
+
     if val is None and key in ["Açúcares adicionados (g)", "Açúcares totais (g)"] and food_desc:
-        desc_lower = food_desc.lower()
-        is_sugar_product = (
-            "açúcar" in desc_lower or 
-            "acucar" in desc_lower or 
-            "melaço" in desc_lower or 
-            "melaco" in desc_lower or 
-            desc_lower == "mel" or 
-            desc_lower.startswith("mel ") or 
-            desc_lower.startswith("mel,")
-        )
-        if is_sugar_product:
-            val = get_num_val(nutrients_dict, "Carboidrato total (g)")
-            
+        desc_lower = re.sub(r'^[^a-zA-ZÀ-ÿ0-9]+', '', food_desc.lower()).strip()
+        if not any(term in desc_lower for term in _SUGAR_FREE_TERMS):
+            is_sugar_product = (
+                desc_lower in ("mel", "açúcar", "acucar", "melaço", "melaco", "glucose", "glicose", "rapadura")
+                or desc_lower.startswith(_PURE_SUGAR_PREFIXES)
+            )
+            if is_sugar_product:
+                val = get_num_val(nutrients_dict, "Carboidrato total (g)")
+
     if val is None:
         return 0.0
-        
+
     if isinstance(val, (int, float)):
         return float(val)
-        
+
     if isinstance(val, str):
         val_clean = val.strip().lower()
-        if val_clean in ["tr", "nd", "na", "", "-", "n.d."]:
+        if val_clean in ["tr", "nd", "na", "", "-", "n.d.", "*"]:
             return 0.0
         try:
             return float(val_clean.replace(',', '.'))
         except ValueError:
             return 0.0
-            
+
     return 0.0
 
-def round_anvisa(value, nutrient_name):
-    if value is None:
-        return "0"
-    
-    def dec_round(val, decs):
-        d = Decimal(f"{val:.10f}")
-        prec = Decimal('1') if decs == 0 else Decimal('.' + '0' * decs)
-        return float(d.quantize(prec, rounding=ROUND_HALF_UP))
-    
-    if nutrient_name == "Energia (kcal)":
-        return f"{int(dec_round(value, 0))}"
-        
-    if nutrient_name == "Sódio (mg)":
-        if value <= 5.0:
-            return "0"
-        return f"{int(dec_round(value, 0))}"
-        
-    if nutrient_name == "Gorduras trans (g)":
-        if value <= 0.2:
-            return "0"
-        res = dec_round(value, 1)
-        if res.is_integer():
-            return f"{int(res)}"
-        return f"{res}".replace('.', ',')
 
-    if value <= 0.5:
+def round_anvisa_num(value, nutrient_name) -> float:
+    """
+    Retorna o valor numérico arredondado segundo os Anexos III e IV da IN 75/2020 (ANVISA).
+    """
+    if value is None:
+        return 0.0
+    val = float(value)
+
+    if nutrient_name == "Energia (kcal)":
+        if val <= 4.0:
+            return 0.0
+        return _dec_round(val, 0)
+
+    if nutrient_name == "Sódio (mg)":
+        if val <= 5.0:
+            return 0.0
+        return _dec_round(val, 0)
+
+    if nutrient_name in ("Gorduras saturadas (g)", "Gorduras trans (g)"):
+        if val <= 0.1:
+            return 0.0
+        if val < 10.0:
+            return _dec_round(val, 1)
+        return _dec_round(val, 0)
+
+    # Demais macronutrientes em gramas (limite de quantidade não significativa <= 0,5 g)
+    if val <= 0.5:
+        return 0.0
+    if val < 10.0:
+        return _dec_round(val, 1)
+    return _dec_round(val, 0)
+
+
+def round_anvisa(value, nutrient_name) -> str:
+    """
+    Formata o valor nutricional para declaração na Tabela de Informação Nutricional
+    segundo os Anexos III e IV da IN 75/2020 (ANVISA).
+    """
+    res = round_anvisa_num(value, nutrient_name)
+    if res == 0.0:
         return "0"
-    elif value < 10.0:
-        res = dec_round(value, 1)
-        if res.is_integer():
-            return f"{int(res)}"
-        return f"{res}".replace('.', ',')
-    else:
-        return f"{int(dec_round(value, 0))}"
+    if nutrient_name in ("Energia (kcal)", "Sódio (mg)") or res >= 10.0 or res.is_integer():
+        return f"{int(res)}"
+    return f"{res:.1f}".replace('.', ',')
+
+
+def calculate_vd_percent(portion_value: float, nutrient_name: str) -> int:
+    """
+    Calcula o %VD a partir do valor da porção declarado (arredondado segundo IN 75/2020 Anexo III item 4),
+    aplicando arredondamento simétrico (ROUND_HALF_UP) sem casas decimais.
+    """
+    vdr_val = VDR.get(nutrient_name)
+    if not vdr_val or vdr_val <= 0:
+        return 0
+    declared_portion = round_anvisa_num(portion_value, nutrient_name)
+    raw_pct = (declared_portion / vdr_val) * 100.0
+    return int(_dec_round(raw_pct, 0))
+
+
+def format_anvisa_portions_per_package(ref_weight: float, portion_size: float) -> str:
+    """
+    Formata o número de porções por embalagem segundo o Anexo III item 5 da IN 75/2020 (ANVISA):
+    números inteiros com arredondamento meia-unidade para cima (ROUND_HALF_UP).
+    """
+    if portion_size <= 0 or ref_weight <= 0:
+        return "Cerca de 1"
+    n_raw = ref_weight / portion_size
+    if n_raw < 1.5:
+        return "Cerca de 1"
+    n_int = int(_dec_round(n_raw, 0))
+    return f"Cerca de {max(1, n_int)}"
+
 
 
 # ==============================================================================

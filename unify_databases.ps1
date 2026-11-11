@@ -1,4 +1,4 @@
-# Script para unificar dados da TBCA e TACO em SQL e JSON
+﻿# Script para unificar dados da TBCA e TACO em SQL e JSON
 $tbcaRawPath = "C:\Users\IRINEU\.gemini\antigravity\scratch\alimentos_raw.json"
 $tacoCsvPath = "C:\Users\IRINEU\.gemini\antigravity\brain\dc7db576-c340-4f7c-8def-bf6fa99b4b55\Taco-4a-Edicao.CSV"
 $sqlOutputPath = "C:\Users\IRINEU\.gemini\antigravity\scratch\tbca-app\tbca_taco.sql"
