@@ -19,6 +19,8 @@ Uso:
 
 import re
 
+_MODULE_VERSION = "2026.11.11.v3"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MAPA DE SUBSTITUIÇÃO DIRETA (Override)
 # Cobre os 50+ ingredientes mais comuns da indústria alimentícia brasileira.

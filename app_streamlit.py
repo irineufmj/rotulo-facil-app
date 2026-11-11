@@ -18,16 +18,19 @@ import utils.auth as _mod_auth
 import utils.calculations as _mod_calculations
 import utils.ui as _mod_ui
 
+import utils.mapear_ingredientes as _mod_mapear
+
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.06.v2"
+_EXPECTED_UTILS_VERSION = "2026.11.11.v3"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "upsert_single_user_sql"),
     (_mod_data_loader, "invalidate_data_caches"),
     (_mod_auth, "create_session_token"),
-    (_mod_calculations, "calculate_monthly_sales_goal"),
+    (_mod_calculations, "round_anvisa_num"),
     (_mod_ui, "inject_custom_css"),
     (_mod_webhook, "sync_user_mercadopago_payments"),
+    (_mod_mapear, "gerar_lista_ingredientes_rotulo"),
 ):
     if getattr(_mod, "_MODULE_VERSION", None) != _EXPECTED_UTILS_VERSION or not hasattr(_mod, _req_attr):
         try:
@@ -60,11 +63,19 @@ except ImportError:
             "hint": "Dica de medidas: 1 colher de sopa = ~15g | 1 xícara = ~150g | 1 pacote de 1 kg = 1000g"
         }
 from utils.calculations import (
-    get_num_val, round_anvisa, round_anvisa_num, calculate_vd_percent, format_anvisa_portions_per_package, VDR,
+    get_num_val, round_anvisa, VDR,
     calculate_financial_breakdown, calculate_cmv, calculate_ingredient_cost,
     convert_package_to_cost_kg, calculate_hourly_labor_rate, calculate_overhead_rate_pct,
     calculate_monthly_sales_goal, calculate_bulk_discount_simulation
 )
+try:
+    from utils.calculations import round_anvisa_num, calculate_vd_percent, format_anvisa_portions_per_package
+except ImportError:
+    importlib.reload(_mod_calculations)
+    from utils.calculations import get_num_val, round_anvisa, VDR
+    round_anvisa_num = getattr(_mod_calculations, "round_anvisa_num", lambda v, k: float(str(round_anvisa(v, k)).replace(",", ".") or 0.0))
+    calculate_vd_percent = getattr(_mod_calculations, "calculate_vd_percent", lambda pv, k: round((float(pv or 0.0) / VDR.get(k, 100.0)) * 100))
+    format_anvisa_portions_per_package = getattr(_mod_calculations, "format_anvisa_portions_per_package", lambda rw, ps: "Cerca de 1" if ps <= 0 or (rw / ps) < 1.5 else f"Cerca de {int(round(rw / ps))}")
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
 from utils.db import save_ticket_sql, load_tickets_sql, update_ticket_status_sql
 from utils.mapear_ingredientes import gerar_lista_ingredientes_rotulo
