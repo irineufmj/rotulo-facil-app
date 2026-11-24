@@ -1,0 +1,37 @@
+{
+  "schema_version": "2.0.0",
+  "generated_at": "2026-11-24 16:34:58",
+  "generator_script": "scripts/sanitize_unified_db.py",
+  "sources": {
+    "TBCA": {
+      "file": "alimentos.json",
+      "records": 5668,
+      "version_note": "TBCA USP/FoRC (versão/data de extração original não informada nos metadados brutos; compatível com série v7.1/v7.2)",
+      "sha256": "AD6C13C3256EC8DECDCBA814AE36E413034C32D127094A8E7DCA56942D73625C"
+    },
+    "TACO": {
+      "file": "Taco-4a-Edicao.CSV",
+      "records": 597,
+      "version_note": "TACO NEPA/UNICAMP 4ª Edição Revisada e Ampliada (2011) — Tabela principal (sem CSV de Ácidos Graxos)",
+      "sha256": "92F3B9EB68539A1C276403E1D22C0F5FF55CDC73E02EB83EBE4C6B45AD15C115"
+    }
+  },
+  "output": {
+    "file": "alimentos_unified.json",
+    "total_records": 6265,
+    "sha256": "F2725F0E046C44C42A8E65DCC45F4CC30B897699C586CC823D8B93E6C751531B"
+  },
+  "sanitization_stats": {
+    "tbca_acucar_total_marcado_na": 4968,
+    "grupo_pescados_normalizado": 437,
+    "colesterol_chave_corrigida": 269,
+    "violacao_acucar_corrigida": 38,
+    "violacao_carb_disp_corrigida": 6,
+    "alerta_sat_maior_lip": 12,
+    "violacao_trans_impossivel_corrigida": 3,
+    "taco_carb_disp_corrigido": 355,
+    "taco_acucar_falso_corrigido": 3,
+    "taco_grupo_restaurado": 363,
+    "taco_373_b6_corrigido": 1
+  }
+}

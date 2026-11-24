@@ -19,5 +19,6 @@ tbca_taco.sql
 # Log files
 *.log
 
-# Admin password file
+# Admin password file and diagnostic scripts
 .admin_password
+run_db_diag.py

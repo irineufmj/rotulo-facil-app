@@ -1,16 +1,19 @@
 import re
 from decimal import Decimal, ROUND_HALF_UP
 
-_MODULE_VERSION = "2026.11.11.v3"
+_MODULE_VERSION = "2026.11.24.v5"
 
+# F-04 (RDC 429/2020 Art. 11 § 2º e IN 75/2020 Anexo II):
+# Açúcares totais e Gorduras trans NÃO possuem VDR estabelecido (célula %VD* deve ficar vazia).
 VDR = {
     "Energia (kcal)": 2000.0,
     "Carboidrato total (g)": 300.0,
+    "Açúcares totais (g)": None,
     "Açúcares adicionados (g)": 50.0,
     "Proteína (g)": 50.0,
     "Lipídios (g)": 65.0,
     "Gorduras saturadas (g)": 20.0,
-    "Gorduras trans (g)": 2.0,
+    "Gorduras trans (g)": None,
     "Fibra alimentar (g)": 25.0,
     "Sódio (mg)": 2000.0
 }
@@ -132,35 +135,31 @@ def get_num_val(nutrients_dict, key, food_desc=""):
 
 def round_anvisa_num(value, nutrient_name) -> float:
     """
-    Retorna o valor numérico arredondado segundo os Anexos III e IV da IN 75/2020 (ANVISA).
+    F-03: Retorna o valor numérico arredondado segundo os Anexos III e IV da IN 75/2020 (ANVISA).
+    Arredonda primeiro para a precisão aplicável e aplica o corte de quantidade não significativa ('zero')
+    sobre o valor já arredondado, impedindo declarações proibidas como '4' kcal, '5' mg, '0,1' g ou '0,5' g.
     """
     if value is None:
         return 0.0
     val = float(value)
+    if val <= 0.0:
+        return 0.0
 
     if nutrient_name == "Energia (kcal)":
-        if val <= 4.0:
-            return 0.0
-        return _dec_round(val, 0)
+        r = _dec_round(val, 0)
+        return 0.0 if r <= 4.0 else r
 
     if nutrient_name == "Sódio (mg)":
-        if val <= 5.0:
-            return 0.0
-        return _dec_round(val, 0)
+        r = _dec_round(val, 0)
+        return 0.0 if r <= 5.0 else r
 
     if nutrient_name in ("Gorduras saturadas (g)", "Gorduras trans (g)"):
-        if val <= 0.1:
-            return 0.0
-        if val < 10.0:
-            return _dec_round(val, 1)
-        return _dec_round(val, 0)
+        r = _dec_round(val, 0 if val >= 9.95 else 1)
+        return 0.0 if r <= 0.1 else r
 
     # Demais macronutrientes em gramas (limite de quantidade não significativa <= 0,5 g)
-    if val <= 0.5:
-        return 0.0
-    if val < 10.0:
-        return _dec_round(val, 1)
-    return _dec_round(val, 0)
+    r = _dec_round(val, 0 if val >= 9.95 else 1)
+    return 0.0 if r <= 0.5 else r
 
 
 def round_anvisa(value, nutrient_name) -> str:
@@ -176,31 +175,93 @@ def round_anvisa(value, nutrient_name) -> str:
     return f"{res:.1f}".replace('.', ',')
 
 
-def calculate_vd_percent(portion_value: float, nutrient_name: str) -> int:
+def calculate_vd_percent(portion_value: float, nutrient_name: str):
     """
-    Calcula o %VD a partir do valor da porção declarado (arredondado segundo IN 75/2020 Anexo III item 4),
+    F-04: Calcula o %VD a partir do valor da porção declarado (arredondado segundo IN 75/2020 Anexo III item 4),
     aplicando arredondamento simétrico (ROUND_HALF_UP) sem casas decimais.
+    Retorna None para nutrientes sem VDR estabelecido (Açúcares totais e Gorduras trans).
     """
     vdr_val = VDR.get(nutrient_name)
-    if not vdr_val or vdr_val <= 0:
-        return 0
+    if vdr_val is None or vdr_val <= 0:
+        return None
     declared_portion = round_anvisa_num(portion_value, nutrient_name)
     raw_pct = (declared_portion / vdr_val) * 100.0
     return int(_dec_round(raw_pct, 0))
 
 
+def calculate_anvisa_energy_kcal(
+    carb_disp_g: float,
+    prot_g: float,
+    fat_g: float,
+    fiber_g: float = 0.0,
+    alcohol_g: float = 0.0,
+) -> float:
+    """
+    F-06 (RDC Anvisa nº 429/2020, Art. 15 e Anexo XI):
+    Calcula o Valor Energético (kcal) pelos fatores de conversão obrigatórios da ANVISA:
+      - Carboidratos disponíveis: 4 kcal/g
+      - Proteínas: 4 kcal/g
+      - Gorduras totais: 9 kcal/g
+      - Fibra alimentar: 2 kcal/g
+      - Álcool (etanol): 7 kcal/g
+    """
+    c = max(0.0, float(carb_disp_g or 0.0))
+    p = max(0.0, float(prot_g or 0.0))
+    f = max(0.0, float(fat_g or 0.0))
+    fb = max(0.0, float(fiber_g or 0.0))
+    al = max(0.0, float(alcohol_g or 0.0))
+    return (4.0 * c) + (4.0 * p) + (9.0 * f) + (2.0 * fb) + (7.0 * al)
+
+
+# LEG-07: Porções de referência mais frequentes do Anexo V da IN Anvisa nº 75/2020
+ANVISA_ANEXO_V_PORTIONS = {
+    "— Personalizado (informar manualmente) —": None,
+    "Doces em geral / Brigadeiro / Beijinho / Doce de leite (20 g)": {"portion": 20.0, "unit": "g", "measure": "1 unidade", "type": "Sólido ou Semissólido"},
+    "Geleias / Doces em pasta / Coberturas doces (20 g)": {"portion": 20.0, "unit": "g", "measure": "1 colher de sopa", "type": "Sólido ou Semissólido"},
+    "Chocolates / Bombons / Trufas (25 g)": {"portion": 25.0, "unit": "g", "measure": "1 unidade", "type": "Sólido ou Semissólido"},
+    "Biscoitos / Cookies / Bolachas (30 g)": {"portion": 30.0, "unit": "g", "measure": "3 unidades", "type": "Sólido ou Semissólido"},
+    "Granola / Barras de cereais / Mix de sementes (40 g)": {"portion": 40.0, "unit": "g", "measure": "3 colheres de sopa", "type": "Sólido ou Semissólido"},
+    "Pães / Brioches / Pão de queijo (50 g)": {"portion": 50.0, "unit": "g", "measure": "1 unidade", "type": "Sólido ou Semissólido"},
+    "Salgados assados ou fritos / Empadas / Coxinhas (50 g)": {"portion": 50.0, "unit": "g", "measure": "1 unidade", "type": "Sólido ou Semissólido"},
+    "Bolos, tortas, bolo no pote, pão de mel, brownie (60 g)": {"portion": 60.0, "unit": "g", "measure": "1 fatia", "type": "Sólido ou Semissólido"},
+    "Sorvetes / Gelados comestíveis / Açaí (60 g)": {"portion": 60.0, "unit": "g", "measure": "1 bola", "type": "Sólido ou Semissólido"},
+    "Panetones e bolos natalinos (80 g)": {"portion": 80.0, "unit": "g", "measure": "1 fatia", "type": "Sólido ou Semissólido"},
+    "Pratos prontos / Marmitas / Lasanhas (300 g)": {"portion": 300.0, "unit": "g", "measure": "1 unidade", "type": "Sólido ou Semissólido"},
+    "Molhos prontos / Caldas / Temperos líquidos (15 ml)": {"portion": 15.0, "unit": "ml", "measure": "1 colher de sopa", "type": "Líquido"},
+    "Bebidas não alcoólicas / Sucos / Chás prontos (200 ml)": {"portion": 200.0, "unit": "ml", "measure": "1 copo", "type": "Líquido"},
+}
+
+
+def format_anvisa_portion_value(portion_size: float) -> str:
+    """
+    F-09 (Anexo III da IN 75/2020): Formata o tamanho da porção sem truncar frações < 10 g/ml
+    (ex.: 7,5 g mantém 1 casa decimal; >= 10 g ou inteiro exato exibe inteiro).
+    """
+    val = max(0.0, float(portion_size or 0.0))
+    if val >= 9.95 or abs(val - round(val)) < 1e-6:
+        return str(int(_dec_round(val, 0)))
+    r = _dec_round(val, 1)
+    if r >= 10.0 or r.is_integer():
+        return str(int(r))
+    return f"{r:.1f}".replace(".", ",")
+
+
 def format_anvisa_portions_per_package(ref_weight: float, portion_size: float) -> str:
     """
-    Formata o número de porções por embalagem segundo o Anexo III item 5 da IN 75/2020 (ANVISA):
-    números inteiros com arredondamento meia-unidade para cima (ROUND_HALF_UP).
+    F-10 (Anexo III item 5 da IN 75/2020): Formata a frase completa de porções por embalagem,
+    distinguindo divisão exata vs. aproximada ('Cerca de') e singular vs. plural.
     """
     if portion_size <= 0 or ref_weight <= 0:
-        return "Cerca de 1"
+        return "1 porção por embalagem"
     n_raw = ref_weight / portion_size
-    if n_raw < 1.5:
-        return "Cerca de 1"
-    n_int = int(_dec_round(n_raw, 0))
-    return f"Cerca de {max(1, n_int)}"
+    if n_raw <= 1.0 or abs(n_raw - 1.0) < 0.01:
+        return "1 porção por embalagem"
+    n_int = max(1, int(_dec_round(n_raw, 0)))
+    if abs(n_raw - n_int) < 0.01:
+        return "1 porção por embalagem" if n_int == 1 else f"{n_int} porções por embalagem"
+    if n_int == 1:
+        return "Cerca de 1 porção por embalagem"
+    return f"Cerca de {n_int} porções por embalagem"
 
 
 

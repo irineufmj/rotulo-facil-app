@@ -8,7 +8,7 @@ import math
 import html
 import threading
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import importlib
@@ -21,13 +21,13 @@ import utils.ui as _mod_ui
 import utils.mapear_ingredientes as _mod_mapear
 
 # Garantir recarga automática dos submódulos quando o Streamlit Cloud faz hot-reload sem reiniciar o processo
-_EXPECTED_UTILS_VERSION = "2026.11.11.v3"
+_EXPECTED_UTILS_VERSION = "2026.11.24.v5"
 import utils.webhook_handler as _mod_webhook
 for _mod, _req_attr in (
     (_mod_db, "upsert_single_user_sql"),
-    (_mod_data_loader, "invalidate_data_caches"),
+    (_mod_data_loader, "rehydrate_recipe_ingredients"),
     (_mod_auth, "create_session_token"),
-    (_mod_calculations, "round_anvisa_num"),
+    (_mod_calculations, "format_anvisa_portion_value"),
     (_mod_ui, "inject_custom_css"),
     (_mod_webhook, "sync_user_mercadopago_payments"),
     (_mod_mapear, "gerar_lista_ingredientes_rotulo"),
@@ -51,6 +51,9 @@ from utils.data_loader import (
     get_user_plan_status, can_user_save_recipe, get_recipes_as_ingredients,
     get_custom_ingredients_list, save_custom_ingredient, detect_allergens_from_recipe,
     TOP_CONFECTIONERY_MAP, filter_and_rank_ingredients, format_ingredient_option_label,
+    LACTOSE_OPT_NONE, LACTOSE_OPT_CONTAINS, LACTOSE_OPT_SPECIAL_FREE, LACTOSE_OPTIONS,
+    normalize_saved_lactose_opt, resolve_lactose_label_text,
+    ANVISA_ALLERGENS_LIST, format_anvisa_allergens_text, rehydrate_recipe_ingredients,
 )
 try:
     from utils.data_loader import get_ingredient_smart_defaults
@@ -69,13 +72,19 @@ from utils.calculations import (
     calculate_monthly_sales_goal, calculate_bulk_discount_simulation
 )
 try:
-    from utils.calculations import round_anvisa_num, calculate_vd_percent, format_anvisa_portions_per_package
+    from utils.calculations import (
+        round_anvisa_num, calculate_vd_percent, format_anvisa_portions_per_package,
+        calculate_anvisa_energy_kcal, ANVISA_ANEXO_V_PORTIONS, format_anvisa_portion_value,
+    )
 except ImportError:
     importlib.reload(_mod_calculations)
     from utils.calculations import get_num_val, round_anvisa, VDR
     round_anvisa_num = getattr(_mod_calculations, "round_anvisa_num", lambda v, k: float(str(round_anvisa(v, k)).replace(",", ".") or 0.0))
     calculate_vd_percent = getattr(_mod_calculations, "calculate_vd_percent", lambda pv, k: round((float(pv or 0.0) / VDR.get(k, 100.0)) * 100))
-    format_anvisa_portions_per_package = getattr(_mod_calculations, "format_anvisa_portions_per_package", lambda rw, ps: "Cerca de 1" if ps <= 0 or (rw / ps) < 1.5 else f"Cerca de {int(round(rw / ps))}")
+    format_anvisa_portions_per_package = getattr(_mod_calculations, "format_anvisa_portions_per_package", lambda rw, ps: "1 porção por embalagem" if ps <= 0 or (rw / ps) < 1.01 else f"Cerca de {int(round(rw / ps))} porções por embalagem")
+    calculate_anvisa_energy_kcal = getattr(_mod_calculations, "calculate_anvisa_energy_kcal", lambda c, p, f, fb=0.0, al=0.0: (4.0 * c) + (4.0 * p) + (9.0 * f) + (2.0 * fb) + (7.0 * al))
+    ANVISA_ANEXO_V_PORTIONS = getattr(_mod_calculations, "ANVISA_ANEXO_V_PORTIONS", {"— Personalizado (informar manualmente) —": None})
+    format_anvisa_portion_value = getattr(_mod_calculations, "format_anvisa_portion_value", lambda ps: f"{float(ps or 0.0):.1f}".replace(".", ",") if float(ps or 0.0) < 9.95 and abs(float(ps or 0.0) - round(float(ps or 0.0))) > 1e-6 else str(int(round(float(ps or 0.0)))))
 from utils.ui import inject_custom_css, get_lupa_html, generate_anvisa_lupa_svg, get_lupa_image_path
 from utils.db import save_ticket_sql, load_tickets_sql, update_ticket_status_sql
 from utils.mapear_ingredientes import gerar_lista_ingredientes_rotulo
@@ -154,6 +163,9 @@ if "recipe" not in st.session_state:
     st.session_state.recipe = []
 if "weight_final" not in st.session_state:
     st.session_state.weight_final = 0.0
+# F-01: peso total da receita PRONTA (após cocção) informado pelo usuário. 0.0 = não informado (usa soma dos ingredientes crus).
+if "rendimento_pronto_g" not in st.session_state:
+    st.session_state.rendimento_pronto_g = 0.0
 if "portion_size" not in st.session_state:
     st.session_state.portion_size = 60.0
 if "case_measure" not in st.session_state:
@@ -161,7 +173,10 @@ if "case_measure" not in st.session_state:
 if "gluten_opt" not in st.session_state:
     st.session_state.gluten_opt = "NÃO CONTÉM GLÚTEN"
 if "lactose_opt" not in st.session_state:
-    st.session_state.lactose_opt = "NÃO CONTÉM LACTOSE"
+    st.session_state.lactose_opt = LACTOSE_OPT_NONE
+elif st.session_state.lactose_opt == "NÃO CONTÉM LACTOSE":
+    # LEG-17: migra estado legado da sessão para não imprimir alegação ilegal em alimentos comuns
+    st.session_state.lactose_opt = LACTOSE_OPT_NONE
 if "allergens_direct" not in st.session_state:
     st.session_state.allergens_direct = []
 if "allergens_deriv" not in st.session_state:
@@ -172,6 +187,10 @@ if "calculated" not in st.session_state:
     st.session_state.calculated = False
 if "product_type" not in st.session_state:
     st.session_state.product_type = "Sólido ou Semissólido"
+if "liquid_density_g_ml" not in st.session_state:
+    st.session_state.liquid_density_g_ml = 1.0
+if "lupa_exempt_art19" not in st.session_state:
+    st.session_state.lupa_exempt_art19 = False
 
 # Estados de Sessão Financeiros & Precificação
 if "custo_embalagem" not in st.session_state:
@@ -195,13 +214,33 @@ if "yield_units" not in st.session_state:
 
 # --- FUNÇÕES AUXILIARES DE PROCESSAMENTO & TEMPLATES ---
 
+_INVALID_NUTRIENT_TOKENS = ("", "na", "nd", "tr", "*", "-", "n.d.")
+
+
+def _base_has_nutrient(base_n: dict, canon_key: str) -> bool:
+    """True se a base oficial já possui valor numérico utilizável para o nutriente canônico
+    (considerando todos os sinônimos de NUTRIENT_KEY_MAPPING, na mesma ordem usada por get_num_val)."""
+    for cand in _mod_calculations.NUTRIENT_KEY_MAPPING.get(canon_key, [canon_key]):
+        v = (base_n or {}).get(cand)
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip().lower() in _INVALID_NUTRIENT_TOKENS:
+            continue
+        return True
+    return False
+
+
 def _find_food_item(foods_list, code, fallback_desc, fallback_nut):
+    """F-02: o registro oficial da base (TBCA/TACO) é a fonte primária. O fallback do template só
+    preenche nutrientes que a base NÃO possui (considerando sinônimos de chave), garantindo que o
+    mesmo código gere o mesmo vetor nutricional da seleção direta na busca."""
     for f in foods_list:
         if f.get("c") == code:
-            merged_n = dict(fallback_nut or {})
-            for k, v in (f.get("n") or {}).items():
-                if v is not None and str(v).strip().lower() not in ("", "na", "nd", "tr", "*", "-"):
-                    merged_n[k] = v
+            base_n = dict(f.get("n") or {})
+            merged_n = dict(base_n)
+            for fk, fv in (fallback_nut or {}).items():
+                if not _base_has_nutrient(base_n, fk) and fk not in merged_n:
+                    merged_n[fk] = fv
             f_copy = dict(f)
             f_copy["n"] = merged_n
             return f_copy
@@ -241,7 +280,7 @@ def get_model_recipes(foods_list):
             "preco_venda_praticado": 3.50,
             "gluten_opt": "NÃO CONTÉM GLÚTEN",
             "lactose_opt": "CONTÉM LACTOSE",
-            "allergens_direct": ["Leite"],
+            "allergens_direct": [],
             "allergens_deriv": ["Leite", "Soja"],
             "ingredients": [
                 {"c": f_lc["c"], "d": f_lc["d"], "f": f_lc["f"], "w": 395.0, "cost_kg": 20.00, "yield_factor": 1.0, "n": f_lc["n"]},
@@ -267,8 +306,8 @@ def get_model_recipes(foods_list):
             "preco_venda_praticado": 14.00,
             "gluten_opt": "CONTÉM GLÚTEN",
             "lactose_opt": "CONTÉM LACTOSE",
-            "allergens_direct": ["Trigo", "Ovos", "Leite"],
-            "allergens_deriv": ["Trigo", "Leite", "Soja"],
+            "allergens_direct": ["Ovos", "Leite"],
+            "allergens_deriv": ["Trigo", "Leite"],
             "ingredients": [
                 {"c": f_lc["c"], "d": f_lc["d"], "f": f_lc["f"], "w": 790.0, "cost_kg": 20.00, "yield_factor": 1.0, "n": f_lc["n"]},
                 {"c": f_cl["c"], "d": f_cl["d"], "f": f_cl["f"], "w": 400.0, "cost_kg": 19.50, "yield_factor": 1.0, "n": f_cl["n"]},
@@ -296,7 +335,7 @@ def get_model_recipes(foods_list):
             "preco_venda_praticado": 8.00,
             "gluten_opt": "CONTÉM GLÚTEN",
             "lactose_opt": "CONTÉM LACTOSE",
-            "allergens_direct": ["Trigo", "Leite"],
+            "allergens_direct": [],
             "allergens_deriv": ["Trigo", "Leite", "Soja"],
             "ingredients": [
                 {"c": f_lc["c"], "d": f_lc["d"], "f": f_lc["f"], "w": 395.0, "cost_kg": 20.00, "yield_factor": 1.0, "n": f_lc["n"]},
@@ -323,7 +362,7 @@ def get_model_recipes(foods_list):
             "margem_desejada_pct": 35.0,
             "preco_venda_praticado": 24.00,
             "gluten_opt": "NÃO CONTÉM GLÚTEN",
-            "lactose_opt": "NÃO CONTÉM LACTOSE",
+            "lactose_opt": LACTOSE_OPT_NONE,
             "allergens_direct": [],
             "allergens_deriv": [],
             "ingredients": [
@@ -333,6 +372,27 @@ def get_model_recipes(foods_list):
         }
     }
 
+def _recipe_raw_weight() -> float:
+    """Soma dos pesos brutos (crus) dos ingredientes da receita."""
+    return sum(float(i.get("w", 0.0) or 0.0) for i in st.session_state.recipe)
+
+
+def _sync_weight_after_ingredient_change():
+    """F-01: ao alterar ingredientes, o rendimento pós-cocção informado deixa de valer
+    (foi medido para outra composição). Invalida-o, avisa o usuário e recalcula o peso bruto."""
+    if float(st.session_state.get("rendimento_pronto_g", 0.0) or 0.0) > 0:
+        st.session_state.rendimento_pronto_g = 0.0
+        st.toast("⚠️ Você alterou os ingredientes: informe novamente o peso da receita pronta no Passo 2.")
+    st.session_state.weight_final = _recipe_raw_weight()
+
+
+def _register_cooked_yield(weight_final_val: float):
+    """F-01: registra o rendimento pós-cocção apenas se diferir da soma dos ingredientes crus."""
+    raw = _recipe_raw_weight()
+    wf = float(weight_final_val or 0.0)
+    st.session_state.rendimento_pronto_g = wf if (wf > 0 and abs(wf - raw) > 0.05) else 0.0
+
+
 def apply_model_recipe(tpl: dict):
     """Carrega uma receita modelo completa no estado da sessão."""
     st.session_state.recipe = [ing.copy() for ing in tpl["ingredients"]]
@@ -340,6 +400,7 @@ def apply_model_recipe(tpl: dict):
     st.session_state.yield_units = int(tpl["yield_units"])
     st.session_state.yield_mode = "Por Unidades Prontas (ex: 25 brigadeiros)"
     st.session_state.weight_final = float(tpl["weight_final"])
+    _register_cooked_yield(st.session_state.weight_final)
     st.session_state.peso_embalagem = float(tpl["peso_embalagem"])
     st.session_state.portion_size = float(tpl["portion_size"])
     st.session_state.case_measure = tpl["case_measure"]
@@ -362,9 +423,10 @@ def build_anvisa_pdf_bytes(
     portion_size, safe_case_measure, col_100_label, col_portion_label,
     display_100g, display_portion, vd_percents,
     alto_acucar, alto_gordura, alto_sodio,
-    ing_text_pdf, gluten_opt, lactose_opt, alergenicos_text
+    ing_text_pdf, gluten_opt, lactose_opt, alergenicos_text,
+    recipe_ingredients=None, liquid_density=1.0, lupa_exempt=False,
 ) -> bytes:
-    """Função única e centralizada para geração do PDF oficial da Tabela Nutricional ANVISA."""
+    """Função única e centralizada para geração do PDF oficial da Tabela Nutricional ANVISA + Memória de Cálculo."""
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     story = []
@@ -372,6 +434,7 @@ def build_anvisa_pdf_bytes(
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, spaceAfter=15)
     section_style = ParagraphStyle('Section', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=12, spaceAfter=8, spaceBefore=12)
     body_style = ParagraphStyle('Body', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=11)
+    small_style = ParagraphStyle('SmallBody', parent=styles['Normal'], fontName='Helvetica', fontSize=8, leading=10)
     legal_style = ParagraphStyle('Legal', parent=styles['Normal'], fontName='Courier-Bold', fontSize=10, leading=13)
 
     story.append(Paragraph("<b>RELATÓRIO DE ROTULAGEM NUTRICIONAL OFICIAL</b>", title_style))
@@ -382,20 +445,25 @@ def build_anvisa_pdf_bytes(
     story.append(Paragraph("Gerado em conformidade com RDC 429/2020 e IN 75/2020 (Fontes: TBCA USP / TACO UNICAMP)", ParagraphStyle('PSub', parent=body_style, fontName='Helvetica-Oblique', fontSize=8, leading=10, textColor=colors.gray)))
     story.append(Spacer(1, 10))
 
+    def _fmt_vd(nut_key: str) -> str:
+        v = vd_percents.get(nut_key)
+        return "" if v is None else str(int(v))
+
+    portion_fmt_pdf = format_anvisa_portion_value(portion_size)
     table_data = [
         [Paragraph("<b>INFORMAÇÃO NUTRICIONAL</b>", ParagraphStyle('H', parent=body_style, fontName='Helvetica-Bold', fontSize=11)), "", "", ""],
-        [Paragraph(f"{n_porcoes_str} porções por embalagem<br/>Porção: {int(portion_size)} {col_unit} ({safe_case_measure})", body_style), "", "", ""],
+        [Paragraph(f"{html.escape(str(n_porcoes_str))}<br/>Porção: {portion_fmt_pdf} {col_unit} ({safe_case_measure})", body_style), "", "", ""],
         [Paragraph("", body_style), Paragraph(f"<b>{col_100_label}</b>", body_style), Paragraph(f"<b>{col_portion_label}</b>", body_style), Paragraph("<b>%VD*</b>", body_style)],
-        [Paragraph("Valor energético (kcal)", body_style), display_100g['Energia (kcal)'], display_portion['Energia (kcal)'], str(int(vd_percents['Energia (kcal)']))],
-        [Paragraph("Carboidratos (g)", body_style), display_100g['Carboidrato total (g)'], display_portion['Carboidrato total (g)'], str(int(vd_percents['Carboidrato total (g)']))],
-        [Paragraph("&nbsp;&nbsp;Açúcares totais (g)", body_style), display_100g['Açúcares totais (g)'], display_portion['Açúcares totais (g)'], "-"],
-        [Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;Açúcares adicionados (g)", body_style), display_100g['Açúcares adicionados (g)'], display_portion['Açúcares adicionados (g)'], str(int(vd_percents['Açúcares adicionados (g)']))],
-        [Paragraph("Proteínas (g)", body_style), display_100g['Proteína (g)'], display_portion['Proteína (g)'], str(int(vd_percents['Proteína (g)']))],
-        [Paragraph("Gorduras totais (g)", body_style), display_100g['Lipídios (g)'], display_portion['Lipídios (g)'], str(int(vd_percents['Lipídios (g)']))],
-        [Paragraph("&nbsp;&nbsp;Gorduras saturadas (g)", body_style), display_100g['Gorduras saturadas (g)'], display_portion['Gorduras saturadas (g)'], str(int(vd_percents['Gorduras saturadas (g)']))],
-        [Paragraph("&nbsp;&nbsp;Gorduras trans (g)", body_style), display_100g['Gorduras trans (g)'], display_portion['Gorduras trans (g)'], str(int(vd_percents.get('Gorduras trans (g)', 0)))],
-        [Paragraph("Fibra alimentar (g)", body_style), display_100g['Fibra alimentar (g)'], display_portion['Fibra alimentar (g)'], str(int(vd_percents['Fibra alimentar (g)']))],
-        [Paragraph("Sódio (mg)", body_style), display_100g['Sódio (mg)'], display_portion['Sódio (mg)'], str(int(vd_percents['Sódio (mg)']))],
+        [Paragraph("Valor energético (kcal)", body_style), display_100g['Energia (kcal)'], display_portion['Energia (kcal)'], _fmt_vd('Energia (kcal)')],
+        [Paragraph("Carboidratos (g)", body_style), display_100g['Carboidrato total (g)'], display_portion['Carboidrato total (g)'], _fmt_vd('Carboidrato total (g)')],
+        [Paragraph("&nbsp;&nbsp;Açúcares totais (g)", body_style), display_100g['Açúcares totais (g)'], display_portion['Açúcares totais (g)'], ""],
+        [Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;Açúcares adicionados (g)", body_style), display_100g['Açúcares adicionados (g)'], display_portion['Açúcares adicionados (g)'], _fmt_vd('Açúcares adicionados (g)')],
+        [Paragraph("Proteínas (g)", body_style), display_100g['Proteína (g)'], display_portion['Proteína (g)'], _fmt_vd('Proteína (g)')],
+        [Paragraph("Gorduras totais (g)", body_style), display_100g['Lipídios (g)'], display_portion['Lipídios (g)'], _fmt_vd('Lipídios (g)')],
+        [Paragraph("&nbsp;&nbsp;Gorduras saturadas (g)", body_style), display_100g['Gorduras saturadas (g)'], display_portion['Gorduras saturadas (g)'], _fmt_vd('Gorduras saturadas (g)')],
+        [Paragraph("&nbsp;&nbsp;Gorduras trans (g)", body_style), display_100g['Gorduras trans (g)'], display_portion['Gorduras trans (g)'], ""],
+        [Paragraph("Fibra alimentar (g)", body_style), display_100g['Fibra alimentar (g)'], display_portion['Fibra alimentar (g)'], _fmt_vd('Fibra alimentar (g)')],
+        [Paragraph("Sódio (mg)", body_style), display_100g['Sódio (mg)'], display_portion['Sódio (mg)'], _fmt_vd('Sódio (mg)')],
         [Paragraph("<font size=7>* Percentual de valores diários fornecidos pela porção.</font>", body_style), "", "", ""]
     ]
 
@@ -404,9 +472,13 @@ def build_anvisa_pdf_bytes(
         ('SPAN', (0, 0), (3, 0)),
         ('SPAN', (0, 1), (3, 1)),
         ('SPAN', (0, 13), (3, 13)),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
         ('BOX', (0, 0), (-1, -1), 1.5, colors.black),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor("#EEEEEE")),
+        ('LINEBELOW', (0, 0), (-1, 0), 2.5, colors.black),
+        ('LINEBELOW', (0, 1), (-1, 1), 2.5, colors.black),
+        ('LINEBELOW', (0, 2), (-1, 2), 2.5, colors.black),
+        ('LINEABOVE', (0, 13), (-1, 13), 2.5, colors.black),
         ('ALIGN', (1, 2), (-1, -2), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('TOPPADDING', (0, 0), (-1, -1), 3),
@@ -438,9 +510,80 @@ def build_anvisa_pdf_bytes(
     story.append(Paragraph(f"<b>INGREDIENTES:</b> {html.escape(clean_ing)}", legal_style))
     story.append(Spacer(1, 8))
     story.append(Paragraph(f"<b>{html.escape(gluten_opt)}</b>", legal_style))
-    story.append(Paragraph(f"<b>{html.escape(lactose_opt)}</b>", legal_style))
+    lactose_pdf_text = resolve_lactose_label_text(lactose_opt)
+    if lactose_pdf_text:
+        story.append(Paragraph(f"<b>{html.escape(lactose_pdf_text)}</b>", legal_style))
     if alergenicos_text:
         story.append(Paragraph(f"<b>{html.escape(alergenicos_text)}</b>", legal_style))
+
+    # CONF-04 / CONF-05: Página 2 — Memória de Cálculo & Rastreabilidade Técnica
+    if recipe_ingredients:
+        story.append(PageBreak())
+        story.append(Paragraph("<b>MEMÓRIA DE CÁLCULO &amp; RASTREABILIDADE TÉCNICA</b>", title_style))
+        dens_info = f"{float(liquid_density or 1.0):.2f} g/ml" if col_unit == "ml" else "N/A (Sólido/Semissólido)"
+        exempt_info = "Sim (Art. 19 RDC 429/2020)" if lupa_exempt else "Não"
+        story.append(Paragraph(
+            f"<b>Parâmetros Aplicados:</b> Rendimento pronto = {weight_final:.1f} g | "
+            f"Embalagem = {ref_emb} | Porção = {portion_fmt_pdf} {col_unit} | "
+            f"Densidade = {dens_info} | Isenção de Lupa (Art. 19) = {exempt_info}",
+            small_style
+        ))
+        story.append(Paragraph(
+            "<b>Metodologia Energética:</b> Fatores obrigatórios do Anexo XI da RDC nº 429/2020 "
+            "(Carboidratos disp. 4 kcal/g, Proteínas 4 kcal/g, Lipídios 9 kcal/g, Fibra alimentar 2 kcal/g, Álcool 7 kcal/g).",
+            small_style
+        ))
+        story.append(Spacer(1, 10))
+
+        mem_rows = [[
+            Paragraph("<b>Código</b>", small_style),
+            Paragraph("<b>Fonte</b>", small_style),
+            Paragraph("<b>Ingrediente</b>", small_style),
+            Paragraph("<b>Peso (g)</b>", small_style),
+            Paragraph("<b>Obs. de Base</b>", small_style),
+        ]]
+        for ing in recipe_ingredients:
+            code_str = html.escape(str(ing.get("c", "-") or "-"))
+            src_str = html.escape(str(ing.get("f", "-") or "-"))
+            desc_str = html.escape(str(ing.get("d_orig") or ing.get("d", "") or "-"))
+            w_str = f"{float(ing.get('w', 0.0) or 0.0):.1f}"
+            obs_parts = []
+            if ing.get("_na"):
+                obs_parts.append(f"NA: {', '.join(ing['_na'][:3])}")
+            if ing.get("_est"):
+                obs_parts.append(f"Estimado: {', '.join(ing['_est'][:3])}")
+            if ing.get("_tr"):
+                obs_parts.append("Contém traços (Tr)")
+            obs_txt = html.escape(" | ".join(obs_parts) if obs_parts else "Dados originais completos")
+            mem_rows.append([
+                Paragraph(code_str, small_style),
+                Paragraph(src_str, small_style),
+                Paragraph(desc_str, small_style),
+                Paragraph(w_str, small_style),
+                Paragraph(obs_txt, small_style),
+            ])
+
+        mem_tbl = Table(mem_rows, colWidths=[65, 55, 195, 55, 170], repeatRows=1)
+        mem_tbl.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 1.0, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story.append(mem_tbl)
+        story.append(Spacer(1, 14))
+        story.append(Paragraph(
+            "<b>NOTA DE RESPONSABILIDADE TÉCNICA:</b> Os valores nutricionais acima são estimados por cálculo "
+            "indireto a partir das bases de composição TBCA (USP/FoRC) e TACO (NEPA/UNICAMP 4ª Ed.). Nutrientes "
+            "marcados como 'NA' (não analisados) na tabela de origem são considerados como 0 no somatório; quando "
+            "utilizar ingredientes industrializados, confira as declarações do fornecedor. A conformidade final do "
+            "rótulo impresso — incluindo o dimensionamento mínimo de fonte e área da Lupa Frontal proporcional ao "
+            "painel principal em cm² (Anexos XIII e XVII da IN nº 75/2020) — deve ser validada por profissional "
+            "habilitado (Nutricionista ou Engenheiro de Alimentos) antes da produção gráfica.",
+            small_style
+        ))
 
     doc.build(story)
     pdf_buffer.seek(0)
@@ -1318,11 +1461,18 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
         else:
             cat_filter = "⭐ Todos os Ingredientes Base"
 
+        include_prepared_opt = st.checkbox(
+            "Incluir pratos prontos e preparações da TBCA na busca",
+            value=False,
+            key="step1_include_prepared_dishes",
+            help="Por padrão a busca prioriza ingredientes puros. Marque esta opção se precisar buscar pratos ou preparações prontas da TBCA."
+        )
+
         filtered_for_recipe = filter_and_rank_ingredients(
             foods_list=dynamic_foods,
             search_query="",
             category=cat_filter,
-            include_prepared_dishes=False
+            include_prepared_dishes=include_prepared_opt
         )
 
         if not filtered_for_recipe:
@@ -1334,7 +1484,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 foods_list=dynamic_foods,
                 search_query="",
                 category="⭐ Todos os Ingredientes Base",
-                include_prepared_dishes=False
+                include_prepared_dishes=include_prepared_opt
             ) or foods_data[:50]
 
         selected_recipe_food = st.selectbox(
@@ -1402,7 +1552,9 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             )
             if " (Rende " in friendly_name:
                 friendly_name = friendly_name.split(" (Rende ")[0].strip()
-            st.session_state.recipe.append({
+            if " [" in friendly_name and friendly_name.endswith("]"):
+                friendly_name = friendly_name.rsplit(" [", 1)[0].strip()
+            _new_ing_entry = {
                 "c": selected_recipe_food["c"],
                 "d": friendly_name,
                 "d_orig": selected_recipe_food.get("d", friendly_name),
@@ -1410,10 +1562,19 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 "w": ing_weight,
                 "cost_kg": ing_cost_init,
                 "yield_factor": 1.0,
-                "n": selected_recipe_food["n"]
-            })
+                "n": selected_recipe_food["n"],
+            }
+            for _sub_k in (
+                "sub_ingredients", "recipe_total_weight_g",
+                "sub_gluten_opt", "sub_lactose_opt",
+                "sub_allergens_direct", "sub_allergens_deriv", "sub_allergens_may_contain",
+                "_na", "_tr", "_est", "_anomalias",
+            ):
+                if _sub_k in selected_recipe_food:
+                    _new_ing_entry[_sub_k] = selected_recipe_food[_sub_k]
+            st.session_state.recipe.append(_new_ing_entry)
             st.session_state.calculated = True
-            st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
+            _sync_weight_after_ingredient_change()
             if st.session_state.yield_units > 0:
                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
             _auto_al = detect_allergens_from_recipe(st.session_state.recipe)
@@ -1421,6 +1582,9 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             st.session_state.lactose_opt = _auto_al["lactose_opt"]
             st.session_state.allergens_direct = _auto_al["allergens_direct"]
             st.session_state.allergens_deriv = _auto_al["allergens_deriv"]
+            for _mc in _auto_al.get("allergens_may_contain", []):
+                if _mc not in st.session_state.allergens_may_contain:
+                    st.session_state.allergens_may_contain.append(_mc)
             st.toast(f"'{friendly_name}' adicionado à sua receita!")
             st.rerun()
 
@@ -1486,7 +1650,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                                 "n": new_food_obj["n"]
                             })
                             st.session_state.calculated = True
-                            st.session_state.weight_final = sum(ing["w"] for ing in st.session_state.recipe)
+                            _sync_weight_after_ingredient_change()
                             if st.session_state.yield_units > 0:
                                 st.session_state.peso_embalagem = round(st.session_state.weight_final / st.session_state.yield_units, 1)
                             _auto_al = detect_allergens_from_recipe(st.session_state.recipe)
@@ -1507,6 +1671,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             if col_clr.button("🗑️ Limpar Tudo", type="secondary", use_container_width=True):
                 st.session_state.recipe = []
                 st.session_state.weight_final = 0.0
+                st.session_state.rendimento_pronto_g = 0.0
                 st.session_state.calculated = False
                 st.rerun()
 
@@ -1538,7 +1703,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 for n, o in zip(new_recipe_list, st.session_state.recipe)
             ):
                 st.session_state.recipe = new_recipe_list
-                st.session_state.weight_final = sum(i["w"] for i in new_recipe_list)
+                _sync_weight_after_ingredient_change()
                 st.session_state.calculated = True
                 st.rerun()
 
@@ -1583,16 +1748,44 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
             help="Preço de 1 forminha, 1 saquinho ou 1 pote com tampa. Se não usar embalagem, deixe 0,00."
         )
 
-        peso_unit_estimado = max(1.0, round(soma_pesos_brutos / max(1, int(yield_units_val)), 1))
+        # F-01: peso total da receita PRONTA (após cocção) — base correta para o cálculo por 100 g / por porção.
+        _rend_manual_atual = float(st.session_state.get("rendimento_pronto_g", 0.0) or 0.0)
+        rendimento_pronto_val = st.number_input(
+            "2b. Peso TOTAL da receita PRONTA, depois de cozida/assada/reduzida (g ou ml):",
+            min_value=1.0,
+            value=float(_rend_manual_atual if _rend_manual_atual > 0 else soma_pesos_brutos),
+            step=10.0,
+            key=f"wiz_rend_pronto_{int(round(soma_pesos_brutos * 10))}",
+            help="Pese a receita inteira depois de pronta. Se ela perde água no fogo/forno (ex.: brigadeiro, geleia, bolo), "
+                 "o peso final é MENOR que a soma dos ingredientes e os nutrientes por 100 g ficam mais concentrados. "
+                 "Se você não pesou, deixe igual à soma dos ingredientes (assume que não houve perda nem ganho)."
+        )
+        _register_cooked_yield(rendimento_pronto_val)
+        weight_final_total = float(
+            st.session_state.rendimento_pronto_g if st.session_state.rendimento_pronto_g > 0 else soma_pesos_brutos
+        )
+        _variacao_pct = (weight_final_total / soma_pesos_brutos - 1.0) * 100.0
+        if st.session_state.rendimento_pronto_g > 0:
+            st.caption(
+                f"Soma dos ingredientes crus: **{soma_pesos_brutos:.0f} g** → receita pronta: **{weight_final_total:.0f} g** "
+                f"(variação de {_variacao_pct:+.1f}%). Os nutrientes por 100 g serão calculados sobre {weight_final_total:.0f} g."
+            )
+        else:
+            st.caption(
+                f"Sem perda/ganho informado: os nutrientes serão calculados sobre a soma dos ingredientes ({soma_pesos_brutos:.0f} g). "
+                "Se a receita for ao fogo ou forno, informe o peso final real acima."
+            )
+
+        peso_unit_estimado = max(1.0, round(weight_final_total / max(1, int(yield_units_val)), 1))
         if (
             st.session_state.get("_last_wiz_yield_units") != int(yield_units_val)
-            or st.session_state.get("_last_wiz_sum_bruto") != soma_pesos_brutos
+            or st.session_state.get("_last_wiz_sum_bruto") != weight_final_total
             or st.session_state.get("peso_embalagem", 0.0) <= 0.0
         ):
             st.session_state.peso_embalagem = peso_unit_estimado
             st.session_state["wiz_p_emb"] = peso_unit_estimado
             st.session_state["_last_wiz_yield_units"] = int(yield_units_val)
-            st.session_state["_last_wiz_sum_bruto"] = soma_pesos_brutos
+            st.session_state["_last_wiz_sum_bruto"] = weight_final_total
 
         st.markdown("#### 💰 Quanto você quer ganhar de lucro livre?")
         opcoes_lucro = {
@@ -1655,7 +1848,7 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 key="wiz_tx_venda",
                 help="Se vender no PIX ou dinheiro, deixe 0%. Para cartão de crédito, use ~4,5%. Para iFood, use 15% a 27%."
             )
-            peso_unit_estimado = round(soma_pesos_brutos / yield_units_val, 1)
+            peso_unit_estimado = round(weight_final_total / yield_units_val, 1)
             peso_embalagem = st.number_input(
                 "Peso aproximado de 1 unidade pronta (g/ml — usado apenas se for gerar Rótulo ANVISA):",
                 min_value=1.0,
@@ -1668,7 +1861,8 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
         st.session_state.nome_produto = nome_produto
         st.session_state.yield_units = int(yield_units_val)
         st.session_state.peso_embalagem = float(peso_embalagem)
-        st.session_state.weight_final = float(yield_units_val * peso_embalagem)
+        # F-01: weight_final = rendimento TOTAL da receita pronta (não depende do peso por unidade/embalagem)
+        st.session_state.weight_final = weight_final_total
         st.session_state.custo_embalagem = float(custo_embalagem)
         st.session_state.tempo_preparo_min = float(tempo_preparo_min)
         st.session_state.custo_hora_mao_obra = float(custo_hora_mao_obra)
@@ -1869,7 +2063,10 @@ if st.session_state.selected_page == "Ficha Técnica & Precificação":
                 st.session_state.lactose_opt = _det_bridge["lactose_opt"]
                 st.session_state.allergens_direct = _det_bridge["allergens_direct"]
                 st.session_state.allergens_deriv = _det_bridge["allergens_deriv"]
-                for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget"):
+                for _mc in _det_bridge.get("allergens_may_contain", []):
+                    if _mc not in st.session_state.allergens_may_contain:
+                        st.session_state.allergens_may_contain.append(_mc)
+                for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget", "anvisa_allergens_may_contain_widget"):
                     st.session_state.pop(_wk, None)
                 st.session_state.selected_page = "Tabela Nutricional & ANVISA"
                 st.rerun()
@@ -1989,6 +2186,55 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     value=st.session_state.case_measure,
                     key="anvisa_case_measure_widget"
                 )
+
+                # F-08: Densidade (g/ml) para produtos líquidos
+                if product_type == "Líquido":
+                    liquid_density = st.number_input(
+                        "Densidade do líquido (g/ml):",
+                        min_value=0.50,
+                        max_value=2.00,
+                        value=float(st.session_state.get("liquid_density_g_ml", 1.0) or 1.0),
+                        step=0.01,
+                        format="%.2f",
+                        key="anvisa_liquid_density_widget",
+                        help="Água/sucos ≈ 1,00 g/ml; leite ≈ 1,03 g/ml; caldas/xaropes ≈ 1,25–1,35 g/ml; óleos ≈ 0,92 g/ml."
+                    )
+                else:
+                    liquid_density = 1.0
+
+                # LEG-07: Assistente de Porções de Referência (Anexo V da IN 75/2020) e regra de embalagem individual (Art. 9º RDC 429/2020)
+                with st.expander("📏 Assistente de Porção (Anexo V da IN 75/2020)"):
+                    _anexo_v_opts = list(ANVISA_ANEXO_V_PORTIONS.keys())
+                    _sel_anexo_v = st.selectbox(
+                        "Categoria do alimento (Anexo V):",
+                        options=_anexo_v_opts,
+                        key="anvisa_anexo_v_select"
+                    )
+                    _anexo_v_ref = ANVISA_ANEXO_V_PORTIONS.get(_sel_anexo_v)
+                    if _anexo_v_ref and st.button("Aplicar Porção de Referência", key="btn_apply_anexo_v"):
+                        st.session_state.portion_size = float(_anexo_v_ref["portion"])
+                        st.session_state.case_measure = _anexo_v_ref["measure"]
+                        st.session_state.product_type = _anexo_v_ref["type"]
+                        for _wk in ("anvisa_portion_size_widget", "anvisa_case_measure_widget", "anvisa_product_type_widget"):
+                            st.session_state.pop(_wk, None)
+                        st.rerun()
+
+                if _anexo_v_ref:
+                    _ref_p = float(_anexo_v_ref["portion"])
+                    if 0.0 < peso_embalagem <= (2.0 * _ref_p) and abs(portion_size - peso_embalagem) > 0.5:
+                        st.warning(
+                            f"⚠️ **Embalagem Individual (Art. 9º da RDC nº 429/2020):** Como o peso líquido da embalagem "
+                            f"({peso_embalagem:.0f} {_anexo_v_ref['unit']}) é de até 200% da porção de referência "
+                            f"({_ref_p:.0f} {_anexo_v_ref['unit']}), a norma exige declarar a **porção igual ao peso total da embalagem ({peso_embalagem:.0f} {_anexo_v_ref['unit']})**."
+                        )
+
+                # LEG-16: Categorias vedadas/isentas de Lupa Frontal (Art. 19 da RDC 429/2020)
+                lupa_exempt_art19 = st.checkbox(
+                    "Produto isento/vedado de Lupa Frontal (Art. 19 da RDC 429/2020)",
+                    value=bool(st.session_state.get("lupa_exempt_art19", False)),
+                    key="anvisa_lupa_exempt_widget",
+                    help="Frutas, hortaliças, carnes/pescados in natura sem adição, óleos/azeites vegetais, sal, fórmulas infantis e queijos/leites fermentados sem adição opcional de sódio ou açúcares."
+                )
                 
                 st.markdown("##### 🏷️ Declarações Obrigatórias e Alérgenos (RDC 727/2022)")
                 _auto_detected = detect_allergens_from_recipe(st.session_state.recipe)
@@ -1998,7 +2244,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     not st.session_state.allergens_direct
                     and not st.session_state.allergens_deriv
                     and st.session_state.gluten_opt == "NÃO CONTÉM GLÚTEN"
-                    and st.session_state.lactose_opt == "NÃO CONTÉM LACTOSE"
+                    and st.session_state.lactose_opt in (LACTOSE_OPT_NONE, "", "NÃO CONTÉM LACTOSE")
                     and _auto_detected["reasons"]
                 ):
                     st.session_state.gluten_opt = _auto_detected["gluten_opt"]
@@ -2020,7 +2266,10 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                         st.session_state.lactose_opt = _auto_detected["lactose_opt"]
                         st.session_state.allergens_direct = list(_auto_detected["allergens_direct"])
                         st.session_state.allergens_deriv = list(_auto_detected["allergens_deriv"])
-                        for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget"):
+                        for _mc in _auto_detected.get("allergens_may_contain", []):
+                            if _mc not in st.session_state.allergens_may_contain:
+                                st.session_state.allergens_may_contain.append(_mc)
+                        for _wk in ("anvisa_gluten_opt_widget", "anvisa_lactose_opt_widget", "anvisa_allergens_direct_widget", "anvisa_allergens_deriv_widget", "anvisa_allergens_may_contain_widget"):
                             st.session_state.pop(_wk, None)
                         st.toast("Alérgenos, glúten e lactose sincronizados com os ingredientes da receita!")
                         st.rerun()
@@ -2031,15 +2280,27 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                 gluten_index = gluten_options.index(st.session_state.gluten_opt) if st.session_state.gluten_opt in gluten_options else 0
                 gluten_opt = col_dec1.radio("Glúten:", options=gluten_options, index=gluten_index, key="anvisa_gluten_opt_widget")
                 
-                lactose_options = ["NÃO CONTÉM LACTOSE", "CONTÉM LACTOSE"]
-                lactose_index = lactose_options.index(st.session_state.lactose_opt) if st.session_state.lactose_opt in lactose_options else 0
-                lactose_opt = col_dec2.radio("Lactose:", options=lactose_options, index=lactose_index, key="anvisa_lactose_opt_widget")
+                lactose_options = LACTOSE_OPTIONS
+                _cur_lactose_opt = normalize_saved_lactose_opt(st.session_state.lactose_opt)
+                lactose_index = lactose_options.index(_cur_lactose_opt) if _cur_lactose_opt in lactose_options else 0
+                lactose_opt = col_dec2.radio(
+                    "Lactose (Lei 13.305/2016 e RDC 727/2022):",
+                    options=lactose_options,
+                    index=lactose_index,
+                    key="anvisa_lactose_opt_widget",
+                    help="Alimentos comuns naturalmente sem lácteos NÃO declaram lactose no rótulo. "
+                         "Use 'CONTÉM LACTOSE' quando houver > 100 mg/100 g (ou ml). "
+                         "A frase 'NÃO CONTÉM LACTOSE' é restrita a alimentos para fins especiais (RDC 135/2017)."
+                )
+                if lactose_opt == LACTOSE_OPT_SPECIAL_FREE:
+                    st.warning(
+                        "⚠️ **Atenção Regulatória (Lei nº 13.305/2016, RDC nº 727/2022 Art. 22–24 e RDC nº 135/2017):** "
+                        "A alegação **'NÃO CONTÉM LACTOSE'** só pode ser impressa em alimentos especialmente formulados para "
+                        "dietas com restrição de lactose (teor ≤ 100 mg/100 g ou ml obtido por redução/eliminação tecnológica). "
+                        "**Não utilize em alimentos comuns naturalmente isentos de leite/lácteos** (ex.: geleias, pães sem leite, sucos)."
+                    )
                 
-                allergens_list = [
-                    "Trigo", "Centeio", "Cevada", "Aveia", "Crustáceos", "Ovos", "Peixes", 
-                    "Amendoim", "Soja", "Leite", "Amêndoa", "Avelãs", "Castanha-de-caju", 
-                    "Castanha-do-pará", "Macadâmias", "Nozes", "Pecãs", "Pistaches", "Pinoli"
-                ]
+                allergens_list = ANVISA_ALLERGENS_LIST
                 _valid_direct = [a for a in st.session_state.allergens_direct if a in allergens_list]
                 _valid_deriv = [a for a in st.session_state.allergens_deriv if a in allergens_list]
                 _valid_may = [a for a in st.session_state.allergens_may_contain if a in allergens_list]
@@ -2047,19 +2308,26 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                 selected_allergens_deriv = st.multiselect("2. CONTÉM DERIVADOS DE:", options=allergens_list, default=_valid_deriv, key="anvisa_allergens_deriv_widget")
                 selected_allergens_may_contain = st.multiselect("3. PODE CONTER (Cruzada/traços):", options=allergens_list, default=_valid_may, key="anvisa_allergens_may_contain_widget")
                 
-                if st.button("⚡ Atualizar Tabela & Lupas ANVISA", type="primary", use_container_width=True):
-                    st.session_state.weight_final = weight_final
-                    st.session_state.portion_size = portion_size
-                    st.session_state.case_measure = case_measure
-                    st.session_state.gluten_opt = gluten_opt
-                    st.session_state.lactose_opt = lactose_opt
-                    st.session_state.allergens_direct = selected_allergens_direct
-                    st.session_state.allergens_deriv = selected_allergens_deriv
-                    st.session_state.allergens_may_contain = selected_allergens_may_contain
-                    st.session_state.product_type = product_type
-                    st.session_state.peso_embalagem = peso_embalagem
-                    st.session_state.calculated = True
-                    st.toast("Tabela ANVISA atualizada com sucesso!")
+                # F-05: Sincronização automática imediata dos widgets com st.session_state para evitar
+                # divergência entre os campos editados, a pré-visualização e o PDF oficial pago.
+                st.session_state.weight_final = float(weight_final)
+                _register_cooked_yield(weight_final)
+                st.session_state.portion_size = float(portion_size)
+                st.session_state.case_measure = case_measure
+                st.session_state.gluten_opt = gluten_opt
+                st.session_state.lactose_opt = lactose_opt
+                st.session_state.allergens_direct = list(selected_allergens_direct)
+                st.session_state.allergens_deriv = list(selected_allergens_deriv)
+                st.session_state.allergens_may_contain = list(selected_allergens_may_contain)
+                st.session_state.product_type = product_type
+                st.session_state.peso_embalagem = float(peso_embalagem)
+                st.session_state.liquid_density_g_ml = float(liquid_density)
+                st.session_state.lupa_exempt_art19 = bool(lupa_exempt_art19)
+                st.session_state.calculated = True
+
+                st.caption("✅ A pré-visualização, as Lupas e o PDF são atualizados automaticamente conforme você altera os campos acima.")
+                if st.button("⚡ Atualizar Tabela & Lupas ANVISA", type="secondary", use_container_width=True):
+                    st.toast("Tabela ANVISA sincronizada com sucesso!")
                     st.rerun()
 
     # --- PROCESSAMENTO DOS TOTAIS DA RECEITA PARA ROTULAGEM ---
@@ -2089,9 +2357,9 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             "Sódio (mg)": 0.0
         }
         
+        raw_alcohol = 0.0
         for ing in st.session_state.recipe:
             factor = ing["w"] / 100.0
-            raw_totals["Energia (kcal)"] += get_num_val(ing["n"], "Energia (kcal)", ing["d"]) * factor
             carb = get_num_val(ing["n"], "Carboidrato total (g)", ing["d"])
             raw_totals["Carboidrato total (g)"] += carb * factor
             sug_add = get_num_val(ing["n"], "Açúcares adicionados (g)", ing["d"])
@@ -2106,10 +2374,22 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             raw_totals["Gorduras trans (g)"] += get_num_val(ing["n"], "Gorduras trans (g)", ing["d"]) * factor
             raw_totals["Fibra alimentar (g)"] += get_num_val(ing["n"], "Fibra alimentar (g)", ing["d"]) * factor
             raw_totals["Sódio (mg)"] += get_num_val(ing["n"], "Sódio (mg)", ing["d"]) * factor
-            
+            raw_alcohol += get_num_val(ing["n"], "Álcool (g)", ing["d"]) * factor
+
+        # F-06: Valor Energético calculado pelos fatores obrigatórios do Anexo XI da RDC 429/2020 (4, 4, 9, 2, 7 kcal/g)
+        raw_totals["Energia (kcal)"] = calculate_anvisa_energy_kcal(
+            raw_totals["Carboidrato total (g)"],
+            raw_totals["Proteína (g)"],
+            raw_totals["Lipídios (g)"],
+            raw_totals["Fibra alimentar (g)"],
+            raw_alcohol,
+        )
+
+        # F-08: Densidade (g/ml) converte base de 100 g de massa para 100 ml quando product_type == "Líquido"
+        density_mult = float(st.session_state.get("liquid_density_g_ml", 1.0) or 1.0) if product_type == "Líquido" else 1.0
         totals_100g = {}
         for key in raw_totals.keys():
-            totals_100g[key] = (raw_totals[key] / weight_final) * 100.0
+            totals_100g[key] = (raw_totals[key] / weight_final) * 100.0 * density_mult
             
         totals_portion = {}
         for key in raw_totals.keys():
@@ -2123,20 +2403,27 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
         dec_100_gordura = round_anvisa_num(totals_100g["Gorduras saturadas (g)"], "Gorduras saturadas (g)")
         dec_100_sodio = round_anvisa_num(totals_100g["Sódio (mg)"], "Sódio (mg)")
 
+        portion_fmt = format_anvisa_portion_value(portion_size)
         if product_type == "Líquido":
             alto_acucar = dec_100_acucar >= 7.5
             alto_gordura = dec_100_gordura >= 3.0
             alto_sodio = dec_100_sodio >= 300.0
             col_100_label = "100 ml"
-            col_portion_label = f"{int(portion_size)} ml"
+            col_portion_label = f"{portion_fmt} ml"
             col_unit = "ml"
         else:
             alto_acucar = dec_100_acucar >= 15.0
             alto_gordura = dec_100_gordura >= 6.0
             alto_sodio = dec_100_sodio >= 600.0
             col_100_label = "100 g"
-            col_portion_label = f"{int(portion_size)} g"
+            col_portion_label = f"{portion_fmt} g"
             col_unit = "g"
+
+        lupa_exempt = bool(st.session_state.get("lupa_exempt_art19", False))
+        if lupa_exempt:
+            alto_acucar = False
+            alto_gordura = False
+            alto_sodio = False
 
         display_100g = {}
         display_portion = {}
@@ -2176,6 +2463,40 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                     f"⚠️ **Insumo(s) cadastrado(s) sem tabela nutricional:** {', '.join(zero_custom_ings)}. "
                     "Para que o rótulo ANVISA fique exato, preencha os nutrientes do rótulo do fornecedor na aba **Cadastrar Novo Produto**."
                 )
+
+            # UX-09 / CONF-01 / CONF-02 / CONF-04: Transparência de nutrientes ausentes (_na), estimados (_est) e revisão técnica
+            _base_idx = {f.get("c"): f for f in foods_data if f.get("c")}
+            _req_check = {
+                "Açúcares totais (g)", "Açúcar de adição (g)", "Açúcares adicionados (g)",
+                "Ácidos graxos saturados (g)", "Gorduras saturadas (g)",
+                "Ácidos graxos trans (g)", "Gorduras trans (g)", "Sódio (mg)",
+            }
+            _na_alerts = []
+            _est_alerts = []
+            for _ing in st.session_state.recipe:
+                _ref = _base_idx.get(_ing.get("c"), {})
+                _na_keys = [k for k in (_ing.get("_na") or _ref.get("_na") or []) if k in _req_check]
+                _est_keys = [k for k in (_ing.get("_est") or _ref.get("_est") or []) if k in _req_check]
+                if _na_keys:
+                    _na_alerts.append(f"{_ing.get('d', _ing.get('c'))} ({', '.join(_na_keys)})")
+                if _est_keys:
+                    _est_alerts.append(f"{_ing.get('d', _ing.get('c'))} ({', '.join(_est_keys)})")
+            if _na_alerts:
+                st.warning(
+                    "⚠️ **Nutrientes não analisados na tabela de origem (considerados 0 no cálculo):** "
+                    + "; ".join(_na_alerts[:5])
+                    + ("..." if len(_na_alerts) > 5 else "")
+                    + ". Caso utilize produto industrializado, confira o rótulo do fornecedor."
+                )
+            if _est_alerts:
+                st.info(
+                    "ℹ️ **Valores estimados / complementares:** Alguns itens da TACO/TBCA possuem valores estimados para açúcares ou ácidos graxos ("
+                    + "; ".join(_est_alerts[:4])
+                    + ("..." if len(_est_alerts) > 4 else "")
+                    + "). Recomenda-se revisão por Responsável Técnico (Nutricionista / Engenheiro de Alimentos) antes da impressão comercial."
+                )
+            if lupa_exempt:
+                st.info("ℹ️ **Lupa Frontal dispensada/vedada conforme Art. 19 da RDC nº 429/2020** (opção marcada manualmente).")
             
             st.divider()
             
@@ -2202,11 +2523,11 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                         </tr>
                         <tr>
                             <td colspan="4" style="border-bottom: 2px solid #000;">
-                                {n_porcoes_str} porções por embalagem<br>
-                                Porção: {int(portion_size)} {col_unit} ({safe_case_measure})
+                                {n_porcoes_str}<br>
+                                Porção: {portion_fmt} {col_unit} ({safe_case_measure})
                             </td>
                         </tr>
-                        <tr style="font-weight: bold; text-align: center; background-color: #eee;">
+                        <tr style="font-weight: bold; text-align: center; background-color: #ffffff; border-bottom: 2px solid #000;">
                              <td></td>
                              <td style="text-align: right; width: 60px;">{col_100_label}</td>
                              <td style="text-align: right; width: 70px;">{col_portion_label}</td>
@@ -2228,7 +2549,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                             <td class="name">Açúcares totais (g)</td>
                             <td class="num">{display_100g['Açúcares totais (g)']}</td>
                             <td class="num">{display_portion['Açúcares totais (g)']}</td>
-                            <td class="num">-</td>
+                            <td class="num"></td>
                         </tr>
                         <tr class="indent-row">
                             <td class="name" style="padding-left: 26px;">Açúcares adicionados (g)</td>
@@ -2258,7 +2579,7 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                             <td class="name">Gorduras trans (g)</td>
                             <td class="num">{display_100g['Gorduras trans (g)']}</td>
                             <td class="num">{display_portion['Gorduras trans (g)']}</td>
-                            <td class="num">{int(vd_percents.get('Gorduras trans (g)', 0))}</td>
+                            <td class="num"></td>
                         </tr>
                         <tr>
                             <td>Fibra alimentar (g)</td>
@@ -2282,6 +2603,32 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             </div>
             """
             st.markdown(combined_preview_html, unsafe_allow_html=True)
+
+            # UX-07: Diagnóstico da Lupa Frontal (contribuição por ingrediente)
+            with st.expander("🔍 Diagnóstico da Lupa Frontal (contribuição por ingrediente)"):
+                _lim_ac = 7.5 if product_type == "Líquido" else 15.0
+                _lim_gs = 3.0 if product_type == "Líquido" else 6.0
+                _lim_sd = 300.0 if product_type == "Líquido" else 600.0
+                _diag_specs = [
+                    ("Açúcar Adicionado", "Açúcares adicionados (g)", "g", _lim_ac, dec_100_acucar, alto_acucar),
+                    ("Gordura Saturada", "Gorduras saturadas (g)", "g", _lim_gs, dec_100_gordura, alto_gordura),
+                    ("Sódio", "Sódio (mg)", "mg", _lim_sd, dec_100_sodio, alto_sodio),
+                ]
+                for _lbl, _nut_k, _u_lbl, _lim_val, _dec_val, _is_high in _diag_specs:
+                    _status_tag = "🔴 ATIVA LUPA" if _is_high else "🟢 Abaixo do limite"
+                    st.markdown(f"**{_lbl}** ({_status_tag}): `{_dec_val:g} {_u_lbl} / {col_100_label}` (limite Anexo XV: `{_lim_val:g} {_u_lbl}`)")
+                    _contribs = []
+                    for _ing in st.session_state.recipe:
+                        _w_i = float(_ing.get("w", 0.0) or 0.0)
+                        _per_100_i = ((get_num_val(_ing.get("n", {}), _nut_k, _ing.get("d", "")) * (_w_i / 100.0)) / weight_final) * 100.0 * density_mult
+                        if _per_100_i > 0:
+                            _contribs.append((_ing.get("d", _ing.get("c", "")), _per_100_i))
+                    _tot_c = sum(c[1] for c in _contribs)
+                    if _contribs and _tot_c > 0:
+                        _contribs.sort(key=lambda x: x[1], reverse=True)
+                        _top_str = " • ".join(f"{name}: `{val:.2f} {_u_lbl}` ({(val/_tot_c)*100:.0f}%)" for name, val in _contribs[:4])
+                        st.caption(f"Principais contribuintes: {_top_str}")
+
             st.divider()
 
             lista_base = gerar_lista_ingredientes_rotulo(st.session_state.recipe)
@@ -2307,30 +2654,26 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
             st.session_state["lista_ingredientes_editavel"] = lista_editada
             ing_text = lista_editada.rstrip(".").strip()
             
-            alergenicos_text_list = []
-            if allergens_direct or allergens_deriv:
-                if allergens_direct and allergens_deriv:
-                    alergenicos_text_list.append("ALÉRGICOS: CONTÉM " + ", ".join([a.upper() for a in allergens_direct]) + " E DERIVADOS DE " + ", ".join([a.upper() for a in allergens_deriv]))
-                elif allergens_direct:
-                    alergenicos_text_list.append("ALÉRGICOS: CONTÉM " + ", ".join([a.upper() for a in allergens_direct]))
-                else:
-                    alergenicos_text_list.append("ALÉRGICOS: CONTÉM DERIVADOS DE " + ", ".join([a.upper() for a in allergens_deriv]))
-            if allergens_may_contain:
-                alergenicos_text_list.append("ALÉRGICOS: PODE CONTER " + ", ".join([a.upper() for a in allergens_may_contain]))
-            
-            alergenicos_text = ". ".join(alergenicos_text_list)
+            alergenicos_text = format_anvisa_allergens_text(
+                allergens_direct=allergens_direct,
+                allergens_deriv=allergens_deriv,
+                allergens_may_contain=allergens_may_contain,
+            )
             
             st.markdown("##### Textos Legais (Cópia Rápida)")
             safe_ing_text = html.escape(ing_text)
-            legal_html = f"""
-            <div class="legal-box">
-                <strong>INGREDIENTES:</strong> {safe_ing_text}.<br><br>
-                <strong>{gluten_opt}</strong><br>
-                <strong>{lactose_opt}</strong>
-            """
+            lactose_label_txt = resolve_lactose_label_text(lactose_opt)
+            _legal_lines = [f"<strong>{html.escape(gluten_opt)}</strong>"]
+            if lactose_label_txt:
+                _legal_lines.append(f"<strong>{html.escape(lactose_label_txt)}</strong>")
             if alergenicos_text:
-                legal_html += f"<br><strong>{alergenicos_text}</strong>"
-            legal_html += "</div>"
+                _legal_lines.append(f"<strong>{html.escape(alergenicos_text)}</strong>")
+            legal_html = (
+                f'<div class="legal-box">\n'
+                f'    <strong>INGREDIENTES:</strong> {safe_ing_text}.<br><br>\n'
+                f'    {"<br>".join(_legal_lines)}\n'
+                f'</div>'
+            )
             st.markdown(legal_html, unsafe_allow_html=True)
             
             # --- GERAÇÃO DE PDF EM MEMÓRIA E DOWNLOAD (FUNÇÃO CENTRALIZADA & ATÔMICA) ---
@@ -2354,7 +2697,10 @@ if st.session_state.selected_page == "Tabela Nutricional & ANVISA":
                 ing_text_pdf=ing_text_pdf,
                 gluten_opt=gluten_opt,
                 lactose_opt=lactose_opt,
-                alergenicos_text=alergenicos_text
+                alergenicos_text=alergenicos_text,
+                recipe_ingredients=st.session_state.recipe,
+                liquid_density=density_mult,
+                lupa_exempt=lupa_exempt,
             )
             
             from utils.db import get_user_credits_cached
@@ -2539,12 +2885,14 @@ if st.session_state.selected_page in ("Minhas Fichas Técnicas", "Minhas Receita
             st.table(pd.DataFrame(ing_details))
             
             def _load_recipe_into_session(rec_obj, as_copy=False, target_page="Ficha Técnica & Precificação"):
-                st.session_state.recipe = [i.copy() for i in rec_obj["ingredients"]]
+                rehydrated_ings, _n_rehyd = rehydrate_recipe_ingredients(rec_obj["ingredients"], foods_data)
+                st.session_state.recipe = rehydrated_ings
                 st.session_state.weight_final = float(rec_obj.get("weight_final", 100.0) or 100.0)
+                _register_cooked_yield(st.session_state.weight_final)
                 st.session_state.portion_size = float(rec_obj.get("portion_size", 60.0) or 60.0)
                 st.session_state.case_measure = rec_obj.get("case_measure", "1 unidade")
                 st.session_state.gluten_opt = rec_obj.get("gluten_opt", "NÃO CONTÉM GLÚTEN")
-                st.session_state.lactose_opt = rec_obj.get("lactose_opt", "NÃO CONTÉM LACTOSE")
+                st.session_state.lactose_opt = normalize_saved_lactose_opt(rec_obj.get("lactose_opt", LACTOSE_OPT_NONE))
                 st.session_state.allergens_direct = rec_obj.get("allergens_direct", rec_obj.get("selected_allergens", []))
                 st.session_state.allergens_deriv = rec_obj.get("allergens_deriv", [])
                 st.session_state.allergens_may_contain = rec_obj.get("allergens_may_contain", [])

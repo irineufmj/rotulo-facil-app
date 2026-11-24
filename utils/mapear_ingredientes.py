@@ -19,7 +19,7 @@ Uso:
 
 import re
 
-_MODULE_VERSION = "2026.11.11.v3"
+_MODULE_VERSION = "2026.11.24.v5"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAPA DE SUBSTITUIÇÃO DIRETA (Override)
@@ -251,38 +251,47 @@ def nome_rotulo(nome_tecnico: str) -> str:
     return nome_tecnico.title()
 
 
+def _flatten_recipe_for_label(recipe: list[dict], scale: float = 1.0, _depth: int = 0) -> dict[str, float]:
+    """
+    Expande recursivamente sub-receitas (F-11 / LEG-18) ponderando cada ingrediente interno
+    pela fração utilizada da sub-receita e somando pesos de ingredientes equivalentes.
+    """
+    weights_by_name: dict[str, float] = {}
+    for ing in (recipe or []):
+        w = float(ing.get("w", 0.0) or 0.0) * scale
+        if w <= 0:
+            continue
+        sub_ings = ing.get("sub_ingredients")
+        if sub_ings and _depth < 5:
+            sub_tot = float(ing.get("recipe_total_weight_g") or 0.0)
+            if sub_tot <= 0:
+                sub_tot = sum(float(si.get("w", 0.0) or 0.0) for si in sub_ings)
+            sub_scale = (w / sub_tot) if sub_tot > 0 else 1.0
+            child_map = _flatten_recipe_for_label(sub_ings, scale=sub_scale, _depth=_depth + 1)
+            for cname, cw in child_map.items():
+                weights_by_name[cname] = weights_by_name.get(cname, 0.0) + cw
+        else:
+            nome_tecnico = ing.get("d_orig") or ing.get("d", "")
+            nome_limpo = nome_rotulo(nome_tecnico).upper()
+            if nome_limpo:
+                weights_by_name[nome_limpo] = weights_by_name.get(nome_limpo, 0.0) + w
+    return weights_by_name
+
+
 def gerar_lista_ingredientes_rotulo(recipe: list[dict]) -> str:
     """
     Gera o texto completo da lista de ingredientes para o rótulo.
 
-    Regras ANVISA (IN 75/2020):
-      - Ordenado do maior para o menor peso (decrescente).
+    Regras ANVISA (RDC 727/2022 e IN 75/2020):
+      - Ordenado do maior para o menor peso (decrescente), expandindo sub-receitas proporcionalmente.
       - Nomes comerciais em letras maiúsculas.
       - Separados por vírgula, finalizando com ponto.
-
-    Args:
-        recipe: Lista de ingredientes da receita. Cada item é um dict com
-                pelo menos as chaves 'w' (peso em g) e 'd' (descrição técnica).
-
-    Returns:
-        String formatada para o campo INGREDIENTES do rótulo.
-        Ex: "FARINHA DE TRIGO, AÇÚCAR, OVO, MANTEIGA."
     """
     if not recipe:
         return ""
 
-    # Ordenar por peso decrescente (norma ANVISA)
-    sorted_recipe = sorted(recipe, key=lambda x: x.get("w", 0), reverse=True)
-
-    nomes = []
-    seen = set()
-    for ing in sorted_recipe:
-        nome_tecnico = ing.get("d_orig") or ing.get("d", "")
-        nome_limpo = nome_rotulo(nome_tecnico).upper()
-        if nome_limpo and nome_limpo not in seen:
-            nomes.append(nome_limpo)
-            seen.add(nome_limpo)
-
+    weights_by_name = _flatten_recipe_for_label(recipe)
+    nomes = [name for name, _w in sorted(weights_by_name.items(), key=lambda kv: kv[1], reverse=True)]
     return ", ".join(nomes) + "." if nomes else ""
 
 

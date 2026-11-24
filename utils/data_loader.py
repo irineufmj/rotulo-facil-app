@@ -8,8 +8,111 @@ import pandas as pd
 import streamlit as st
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.11.v3"
+_MODULE_VERSION = "2026.11.24.v5"
 _INTERNAL_LOCK = threading.RLock()
+
+# LEG-18 (RDC 727/2022, Art. 13-17 e Anexo III): Lista completa oficial de alergênicos alimentares obrigatórios
+ANVISA_ALLERGENS_LIST = [
+    "Trigo", "Centeio", "Cevada", "Aveia", "Triticale",
+    "Crustáceos", "Ovos", "Peixes", "Amendoim", "Soja", "Leite",
+    "Amêndoa", "Avelãs", "Castanha-de-caju", "Castanha-do-pará",
+    "Macadâmias", "Nozes", "Pecãs", "Pistaches", "Pinoli", "Castanhas",
+    "Látex natural",
+]
+
+
+def _join_pt_upper(items: list) -> str:
+    """Formata lista em CAIXA ALTA com vírgulas e conjunção 'E' antes do último item."""
+    clean = [str(x).strip().upper() for x in (items or []) if str(x).strip()]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0]
+    return ", ".join(clean[:-1]) + " E " + clean[-1]
+
+
+def format_anvisa_allergens_text(
+    allergens_direct: list,
+    allergens_deriv: list,
+    allergens_may_contain: list = None,
+) -> str:
+    """
+    LEG-18: Formata a advertência obrigatória de alergênicos conforme RDC nº 727/2022 (Art. 13, I, II, III e Art. 14),
+    eliminando duplicações como 'CONTÉM LEITE E DERIVADOS DE LEITE' -> 'CONTÉM LEITE E DERIVADOS'.
+    """
+    def _dedup(seq):
+        out = []
+        seen = set()
+        for item in (seq or []):
+            s = str(item or "").strip()
+            if s and s.lower() not in seen:
+                out.append(s)
+                seen.add(s.lower())
+        return out
+
+    direct_clean = _dedup(allergens_direct)
+    deriv_clean = _dedup(allergens_deriv)
+    may_clean = _dedup(allergens_may_contain)
+
+    deriv_lower = {x.lower() for x in deriv_clean}
+    direct_lower = {x.lower() for x in direct_clean}
+
+    only_direct = [x for x in direct_clean if x.lower() not in deriv_lower]
+    both = [x for x in direct_clean if x.lower() in deriv_lower]
+    only_deriv = [x for x in deriv_clean if x.lower() not in direct_lower]
+
+    clauses = []
+    contem_segments = []
+    if only_direct or both:
+        head_items = [x.upper() for x in only_direct] + [f"{x.upper()} E DERIVADOS" for x in both]
+        if len(head_items) == 1:
+            contem_segments.append(head_items[0])
+        elif both:
+            # Quando já há 'X E DERIVADOS', separa os itens anteriores por vírgula para evitar 'OVOS E LEITE E DERIVADOS'
+            contem_segments.append(", ".join(head_items))
+        else:
+            contem_segments.append(", ".join(head_items[:-1]) + " E " + head_items[-1])
+    if only_deriv:
+        contem_segments.append("DERIVADOS DE " + _join_pt_upper(only_deriv))
+
+    if contem_segments:
+        clauses.append("ALÉRGICOS: CONTÉM " + " E ".join(contem_segments))
+
+    if may_clean:
+        if clauses:
+            clauses.append("PODE CONTER " + _join_pt_upper(may_clean))
+        else:
+            clauses.append("ALÉRGICOS: PODE CONTER " + _join_pt_upper(may_clean))
+
+    return ". ".join(clauses)
+
+# LEG-17 (Lei 13.305/2016, RDC 727/2022 Art. 22-24, RDC 135/2017):
+# Alimentos comuns naturalmente sem lácteos NÃO declaram frase de lactose no rótulo.
+# "NÃO CONTÉM LACTOSE" é restrito a alimentos para fins especiais (dietas com restrição de lactose, <= 100 mg/100 g ou ml).
+LACTOSE_OPT_NONE = "Sem declaração de lactose (isento / alimento comum)"
+LACTOSE_OPT_CONTAINS = "CONTÉM LACTOSE"
+LACTOSE_OPT_SPECIAL_FREE = "NÃO CONTÉM LACTOSE (Apenas fins especiais — RDC 135/2017)"
+LACTOSE_OPTIONS = [LACTOSE_OPT_NONE, LACTOSE_OPT_CONTAINS, LACTOSE_OPT_SPECIAL_FREE]
+
+
+def normalize_saved_lactose_opt(raw_opt: str) -> str:
+    """Converte valores legados ('NÃO CONTÉM LACTOSE' usado como default antigo) para a opção isenta segura."""
+    val = (raw_opt or "").strip()
+    if val == LACTOSE_OPT_CONTAINS:
+        return LACTOSE_OPT_CONTAINS
+    if val == LACTOSE_OPT_SPECIAL_FREE:
+        return LACTOSE_OPT_SPECIAL_FREE
+    return LACTOSE_OPT_NONE
+
+
+def resolve_lactose_label_text(lactose_opt: str) -> str:
+    """Retorna a frase exata a ser impressa no rótulo/PDF ANVISA (ou '' quando não houver declaração)."""
+    val = (lactose_opt or "").strip()
+    if val == LACTOSE_OPT_CONTAINS:
+        return "CONTÉM LACTOSE"
+    if val == LACTOSE_OPT_SPECIAL_FREE:
+        return "NÃO CONTÉM LACTOSE"
+    return ""
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_CSV_PATH = os.path.join(BASE_DIR, "custom_ingredients.csv")
@@ -49,11 +152,19 @@ def load_unified_data():
     
     try:
         custom_df = pd.read_csv(CUSTOM_CSV_PATH, encoding="utf-8-sig")
+        _meta_cols = {"codigo", "descricao", "classe", "fonte", "username", "peso_embalagem", "preco_embalagem"}
         for idx, row in custom_df.iterrows():
+            # DB-01: Não vazar insumos privados de usuários específicos no cache global @st.cache_data
+            row_user = str(row.get("username", "") or "").strip()
+            if row_user and row_user.lower() != "nan":
+                continue
             nut_dict = {}
             for col in custom_df.columns:
-                if col not in ["codigo", "descricao", "classe", "fonte"] and pd.notna(row[col]):
-                    nut_dict[col] = float(row[col])
+                if col not in _meta_cols and pd.notna(row[col]):
+                    try:
+                        nut_dict[col] = float(str(row[col]).replace(",", ".").strip())
+                    except (ValueError, TypeError):
+                        continue
             
             if "Carboidrato total (g)" in nut_dict:
                 nut_dict["Carboidrato disponível (g)"] = nut_dict.get("Carboidrato disponível (g)", nut_dict["Carboidrato total (g)"])
@@ -328,6 +439,22 @@ def get_recipes_as_ingredients(db_lock, username):
                 "recipe_name": rec_name,
                 "recipe_total_weight_g": round(w_final, 1),
                 "recipe_total_cost": round(total_cost, 2),
+                "sub_ingredients": [
+                    {
+                        "c": si.get("c", ""),
+                        "d": si.get("d", ""),
+                        "d_orig": si.get("d_orig", si.get("d", "")),
+                        "w": float(si.get("w", 0.0) or 0.0),
+                        "sub_ingredients": si.get("sub_ingredients"),
+                        "recipe_total_weight_g": si.get("recipe_total_weight_g"),
+                    }
+                    for si in ings
+                ],
+                "sub_gluten_opt": r.get("gluten_opt", ""),
+                "sub_lactose_opt": r.get("lactose_opt", ""),
+                "sub_allergens_direct": list(r.get("allergens_direct") or []),
+                "sub_allergens_deriv": list(r.get("allergens_deriv") or []),
+                "sub_allergens_may_contain": list(r.get("allergens_may_contain") or []),
                 "g": "Sub-receitas Salvas",
                 "f": "Usuário",
                 "n": n_100g
@@ -544,8 +671,8 @@ _TOP_CONFECTIONERY_LIST = [
     ("TACO-409", "⭐ Peito de Frango (Cru, sem pele)", "🥩 Carnes, Frango, Peixes & Ovos"),
     ("TACO-408", "⭐ Peito de Frango (Cozido / Desfiado)", "🥩 Carnes, Frango, Peixes & Ovos"),
     ("TACO-489", "⭐ Ovo de Galinha Inteiro (Cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
-    ("TACO-487", "⭐ Gema de Ovo de Galinha", "🥩 Carnes, Frango, Peixes & Ovos"),
-    ("TACO-486", "⭐ Clara de Ovo de Galinha", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("C0008J",   "⭐ Gema de Ovo de Galinha (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
+    ("C0005J",   "⭐ Clara de Ovo de Galinha (Crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
     ("TACO-327", "⭐ Carne Moída Bovina (Acém cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
     ("TACO-376", "⭐ Carne Bovina Patinho (Sem gordura, cru)", "🥩 Carnes, Frango, Peixes & Ovos"),
     ("TACO-369", "⭐ Carne Bovina Alcatra (Sem gordura, crua)", "🥩 Carnes, Frango, Peixes & Ovos"),
@@ -612,7 +739,7 @@ _TOP_CONFECTIONERY_LIST = [
     ("TACO-491", "⭐ Achocolatado em Pó", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-495", "⭐ Chocolate ao Leite (Barra / Gotas)", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-498", "⭐ Chocolate Meio Amargo (Barra / Gotas)", "🍫 Chocolates, Açúcares & Doces"),
-    ("C0164K",   "⭐ Chocolate Branco", "🍫 Chocolates, Açúcares & Doces"),
+    ("C0164K",   "⭐ Chocolate Branco (tipo Galak)", "🍫 Chocolates, Açúcares & Doces"),
     ("C0194K",   "⭐ Chocolate Granulado", "🍫 Chocolates, Açúcares & Doces"),
     ("C0128K",   "⭐ Creme de Avelã com Cacau (tipo Nutella)", "🍫 Chocolates, Açúcares & Doces"),
     ("TACO-501", "⭐ Doce de Leite Cremoso", "🍫 Chocolates, Açúcares & Doces"),
@@ -634,8 +761,10 @@ _TOP_CONFECTIONERY_LIST = [
     ("TACO-590", "⭐ Coco Ralado / Coco Fresco", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-557", "⭐ Amendoim Cru", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-579", "⭐ Paçoca de Amendoim", "🥜 Castanhas, Coco & Oleaginosas"),
-    ("TACO-587", "⭐ Amêndoa Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
-    ("TACO-588", "⭐ Castanha de Caju Torrada", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("C0011U",   "⭐ Amêndoa Sem Sal (Crua)", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-587", "⭐ Amêndoa Torrada COM SAL", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("C0012U",   "⭐ Castanha de Caju Sem Sal (Crua)", "🥜 Castanhas, Coco & Oleaginosas"),
+    ("TACO-588", "⭐ Castanha de Caju Torrada COM SAL", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-589", "⭐ Castanha-do-Pará / Brasil", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-597", "⭐ Nozes", "🥜 Castanhas, Coco & Oleaginosas"),
     ("TACO-8",   "⭐ Biscoito Maisena (p/ Tortas e Palha Italiana)", "🌾 Farinhas, Amidos & Fermentos"),
@@ -738,10 +867,40 @@ def classify_ingredient_category(food: dict) -> str:
     return "🌾 Farinhas, Amidos & Grãos"
 
 
+def rehydrate_recipe_ingredients(ingredients_list: list, foods_data: list) -> tuple:
+    """
+    CONF-06: Reidrata os nutrientes e metadados de proveniência (_na, _tr, _est, _anomalias)
+    dos ingredientes de uma receita salva a partir da base oficial atualizada (pelo código 'c'),
+    preservando pesos, custos e itens customizados/sub-receitas.
+    """
+    if not ingredients_list or not foods_data:
+        return [i.copy() for i in (ingredients_list or [])], 0
+    idx_by_code = {f.get("c"): f for f in foods_data if f.get("c")}
+    out = []
+    updated = 0
+    for ing in ingredients_list:
+        ing_copy = ing.copy()
+        code = ing_copy.get("c", "")
+        src = ing_copy.get("f", "")
+        if code and src not in ("CADASTRO", "Usuário") and code in idx_by_code:
+            base = idx_by_code[code]
+            ing_copy["n"] = dict(base.get("n") or {})
+            ing_copy["d_orig"] = base.get("d", ing_copy.get("d_orig") or ing_copy.get("d", ""))
+            ing_copy["f"] = base.get("f", src)
+            for mk in ("_na", "_tr", "_est", "_anomalias"):
+                if mk in base:
+                    ing_copy[mk] = list(base[mk])
+                else:
+                    ing_copy.pop(mk, None)
+            updated += 1
+        out.append(ing_copy)
+    return out, updated
+
+
 def format_ingredient_option_label(food: dict) -> str:
     """
-    Formata o rótulo do ingrediente no seletor usando linguagem limpa e amigável para pessoas leigas,
-    destacando Receitas Salvas (molhos, coberturas, recheios) e Produtos Cadastrados.
+    UX-06: Formata o rótulo do ingrediente no seletor exibindo claramente a origem [TBCA/TACO • Código],
+    além de destacar Receitas Salvas e Produtos Cadastrados.
     """
     code = food.get("c", "")
     clean_d = (food.get("d", "") or "").rstrip(", ").strip()
@@ -755,9 +914,10 @@ def format_ingredient_option_label(food: dict) -> str:
         return f"🍲 [Minha Receita] {rec_name}"
     if source == "CADASTRO":
         return f"➕ [Meu Produto] {clean_d}"
+    tag = f" [{source} • {code}]" if (source and code) else (f" [{code}]" if code else "")
     if code in TOP_CONFECTIONERY_MAP:
-        return TOP_CONFECTIONERY_MAP[code]["alias"]
-    return clean_d
+        return f"{TOP_CONFECTIONERY_MAP[code]['alias']}{tag}"
+    return f"{clean_d}{tag}"
 
 
 _SMART_PACKAGE_DEFAULTS = {
@@ -1010,10 +1170,11 @@ def filter_and_rank_ingredients(
     return sorted(matched, key=_search_sort_key)[:100]
 
 
-def detect_allergens_from_recipe(recipe_ingredients: list) -> dict:
+def detect_allergens_from_recipe(recipe_ingredients: list, _depth: int = 0) -> dict:
     """
-    Analisa automaticamente os ingredientes da receita e detecta Glúten, Lactose,
-    Alérgenos Diretos (CONTÉM) e Derivados (CONTÉM DERIVADOS DE) conforme RDC 727/2022 da ANVISA.
+    Analisa automaticamente os ingredientes da receita (incluindo sub-receitas aninhadas) e detecta
+    Glúten, Lactose, Alérgenos Diretos (CONTÉM), Derivados (CONTÉM DERIVADOS DE) e Traços (PODE CONTER)
+    conforme RDC 727/2022 (Anexo III) da ANVISA.
     """
     import unicodedata
 
@@ -1027,106 +1188,194 @@ def detect_allergens_from_recipe(recipe_ingredients: list) -> dict:
     has_lactose = False
     direct_set = []
     deriv_set = []
+    may_set = []
     triggers = []
 
     def _add_unique(lst, item):
-        if item not in lst:
+        if item and item not in lst:
             lst.append(item)
 
-    plant_milks = (
-        "leite de coco", "leite de soja", "leite de amendoa", "leite de aveia",
-        "leite de arroz", "leite de castanha", "leite vegetal",
-    )
-    non_dairy_butters = (
-        "manteiga de cacau", "manteiga de amendoim", "manteiga de coco", "manteiga de karite",
+    non_dairy_phrases = (
+        "substituto do leite", "leite de coco", "coco, leite", "leite, de coco",
+        "leite de soja", "leite de amendoa", "leite de aveia",
+        "leite de arroz", "leite de castanha", "leite vegetal", "bebida vegetal",
+        "manteiga de cacau", "manteiga, cacau", "manteiga de amendoim",
+        "manteiga de coco", "manteiga de karite", "queijo vegetal", "queijo vegano",
     )
 
     for ing in (recipe_ingredients or []):
-        raw_d = str(ing.get("d", "") or "").strip()
+        # LEG-18 / F-11: Propagação recursiva de sub-receitas (ingredientes internos + alérgenos salvos)
+        sub_ings = ing.get("sub_ingredients")
+        if sub_ings and _depth < 5:
+            sub_res = detect_allergens_from_recipe(sub_ings, _depth=_depth + 1)
+            if sub_res["gluten_opt"] == "CONTÉM GLÚTEN":
+                has_gluten = True
+            if sub_res["lactose_opt"] == LACTOSE_OPT_CONTAINS:
+                has_lactose = True
+            for a in sub_res["allergens_direct"]:
+                _add_unique(direct_set, a)
+            for a in sub_res["allergens_deriv"]:
+                _add_unique(deriv_set, a)
+            for a in sub_res.get("allergens_may_contain", []):
+                _add_unique(may_set, a)
+            for r_trig in sub_res["reasons"]:
+                _add_unique(triggers, f"[Sub-receita] {r_trig}")
+
+        if ing.get("sub_gluten_opt") == "CONTÉM GLÚTEN":
+            has_gluten = True
+        if ing.get("sub_lactose_opt") == LACTOSE_OPT_CONTAINS:
+            has_lactose = True
+        for a in (ing.get("sub_allergens_direct") or []):
+            if a in ANVISA_ALLERGENS_LIST:
+                _add_unique(direct_set, a)
+        for a in (ing.get("sub_allergens_deriv") or []):
+            if a in ANVISA_ALLERGENS_LIST:
+                _add_unique(deriv_set, a)
+        for a in (ing.get("sub_allergens_may_contain") or []):
+            if a in ANVISA_ALLERGENS_LIST:
+                _add_unique(may_set, a)
+
+        raw_d = str(ing.get("d_orig") or ing.get("d", "") or "").strip()
+        d_lower = raw_d.lower()
         d_norm = _norm(raw_d)
         if not d_norm:
             continue
 
-        is_gluten_free_explicit = ("sem gluten" in d_norm or "zero gluten" in d_norm)
-        is_lactose_free_explicit = ("sem lactose" in d_norm or "zero lactose" in d_norm)
+        is_gluten_free_explicit = any(t in d_norm for t in ("sem gluten", "zero gluten", "s/ gluten"))
+        is_lactose_free_explicit = any(t in d_norm for t in ("sem lactose", "zero lactose", "s/ lactose"))
 
-        # 1. Trigo, Centeio, Cevada, Aveia e Glúten
-        if any(w in d_norm for w in ("trigo", "semolina", "macarrao", "lasanha", "biscoito", "bolacha", "pao ", "torrada")):
+        # 1. Trigo, Centeio, Cevada, Aveia, Triticale e Glúten (excluindo trigo sarraceno/mourisco)
+        d_wheat = d_norm.replace("trigo sarraceno", "").replace("trigo-sarraceno", "").replace("trigo mourisco", "")
+        wheat_deriv_markers = (
+            "farinha de trigo", "farinha, de trigo", "semolina", "semola",
+            "macarrao", "lasanha", "biscoito", "bolacha", "pao ", "pao,", "torrada",
+            "farinha de rosca", "gluten de trigo", "germe de trigo", "germen de trigo",
+        )
+        if any(w in d_wheat for w in wheat_deriv_markers):
+            if not is_gluten_free_explicit:
+                has_gluten = True
+                _add_unique(deriv_set, "Trigo")
+                triggers.append(f"Derivados de Trigo / Glúten ({raw_d})")
+        elif "trigo" in d_wheat:
             if not is_gluten_free_explicit:
                 has_gluten = True
                 _add_unique(direct_set, "Trigo")
-                _add_unique(deriv_set, "Trigo")
                 triggers.append(f"Trigo / Glúten ({raw_d})")
+
+        if "triticale" in d_norm:
+            if not is_gluten_free_explicit:
+                has_gluten = True
+            if "farinha" in d_norm:
+                _add_unique(deriv_set, "Triticale")
+            else:
+                _add_unique(direct_set, "Triticale")
+            triggers.append(f"Triticale ({raw_d})")
 
         if "aveia" in d_norm:
             if not is_gluten_free_explicit:
                 has_gluten = True
-            _add_unique(direct_set, "Aveia")
-            _add_unique(deriv_set, "Aveia")
+            if any(w in d_norm for w in ("farinha de aveia", "farinha, de aveia", "extrato de aveia", "leite de aveia", "bebida de aveia")):
+                _add_unique(deriv_set, "Aveia")
+            else:
+                _add_unique(direct_set, "Aveia")
             triggers.append(f"Aveia ({raw_d})")
 
         if "centeio" in d_norm:
             if not is_gluten_free_explicit:
                 has_gluten = True
-            _add_unique(direct_set, "Centeio")
+            if "farinha" in d_norm:
+                _add_unique(deriv_set, "Centeio")
+            else:
+                _add_unique(direct_set, "Centeio")
             triggers.append(f"Centeio ({raw_d})")
 
         if any(w in d_norm for w in ("cevada", "malte")):
             if not is_gluten_free_explicit:
                 has_gluten = True
-            _add_unique(direct_set, "Cevada")
-            _add_unique(deriv_set, "Cevada")
+            if "malte" in d_norm or "farinha" in d_norm or "extrato" in d_norm:
+                _add_unique(deriv_set, "Cevada")
+            else:
+                _add_unique(direct_set, "Cevada")
             triggers.append(f"Cevada ({raw_d})")
 
-        # 2. Leite, Derivados Lácteos e Lactose
-        is_plant_milk = any(pm in d_norm for pm in plant_milks)
-        is_non_dairy_butter = any(nb in d_norm for nb in non_dairy_butters)
+        # 2. Leite, Derivados Lácteos e Lactose (removendo expressões vegetais antes da checagem)
+        d_dairy = d_norm
+        for ndp in non_dairy_phrases:
+            d_dairy = d_dairy.replace(ndp, " ")
 
-        dairy_direct_markers = ("leite integral", "leite desnatado", "leite semidesnatado", "leite de vaca", "leite em po", "leite fluido")
+        dairy_direct_markers = (
+            "leite integral", "leite desnatado", "leite semidesnatado",
+            "leite de vaca", "leite, vaca", "leite, de vaca",
+            "leite em po", "leite, em po", "leite fluido", "leite uht",
+            "leite pasteurizado", "leite de cabra", "leite de bufala", "leite de ovelha",
+        )
         dairy_deriv_markers = (
-            "leite condensado", "creme de leite", "doce de leite", "manteiga", "queijo",
-            "mucarela", "mussarela", "parmesao", "ricota", "requeijao", "iogurte",
-            "cream cheese", "soro de leite", "whey", "coalhada", "nata",
-            "chocolate ao leite", "chocolate branco", "achocolatado",
+            "leite, vaca, condensado", "leite, de vaca, condensado", "leite, condensado",
+            "leite condensado", "creme, de leite", "creme de leite",
+            "doce, de leite", "doce de leite", "doce, leite", "soro, de leite", "soro de leite",
+            "manteiga", "queijo", "mucarela", "mussarela", "parmesao", "ricota", "requeijao",
+            "iogurte", "cream cheese", "whey", "caseina", "caseinato",
+            "coalhada", "nata", "chocolate, ao leite", "chocolate ao leite",
+            "chocolate branco", "chocolate, branco", "achocolatado", "composto lacteo", "fermento lacteo",
         )
 
-        if not is_plant_milk and not is_non_dairy_butter:
-            if any(m in d_norm for m in dairy_direct_markers) or ("leite" in d_norm and not any(m in d_norm for m in dairy_deriv_markers)):
-                _add_unique(direct_set, "Leite")
-                _add_unique(deriv_set, "Leite")
-                if not is_lactose_free_explicit:
-                    has_lactose = True
-                triggers.append(f"Leite / Lactose ({raw_d})")
-            elif any(m in d_norm for m in dairy_deriv_markers):
-                _add_unique(direct_set, "Leite")
-                _add_unique(deriv_set, "Leite")
-                if not is_lactose_free_explicit:
-                    has_lactose = True
-                triggers.append(f"Derivados de Leite / Lactose ({raw_d})")
+        # Se for leite condensado ("Leite, vaca, condensado" na TBCA), priorizar derivado em vez de leite fluido
+        has_dairy_deriv = any(m in d_dairy for m in dairy_deriv_markers)
+        d_dairy_no_deriv = d_dairy
+        for dm in dairy_deriv_markers:
+            d_dairy_no_deriv = d_dairy_no_deriv.replace(dm, " ")
+        has_dairy_direct = (
+            (any(m in d_dairy for m in dairy_direct_markers) and "condensado" not in d_dairy)
+            or ("leite" in d_dairy_no_deriv)
+        )
+
+        if has_dairy_direct:
+            _add_unique(direct_set, "Leite")
+            if not is_lactose_free_explicit:
+                has_lactose = True
+            triggers.append(f"Leite / Lactose ({raw_d})")
+        if has_dairy_deriv:
+            _add_unique(deriv_set, "Leite")
+            if not is_lactose_free_explicit:
+                has_lactose = True
+            triggers.append(f"Derivados de Leite / Lactose ({raw_d})")
 
         # 3. Ovos
-        if any(w in d_norm for w in ("ovo", "ovos", "gema", "clara de ovo", "clara,", "maionese", "merengue")):
+        if any(w in d_norm for w in ("albumina", "maionese", "lecitina de ovo")):
+            _add_unique(deriv_set, "Ovos")
+            triggers.append(f"Derivados de Ovos ({raw_d})")
+        elif any(w in d_norm for w in ("ovo", "ovos", "gema", "clara de ovo", "clara,", "merengue")):
             _add_unique(direct_set, "Ovos")
             triggers.append(f"Ovos ({raw_d})")
 
-        # 4. Soja (incluindo óleo de soja e lecitina presente em chocolates)
-        if any(w in d_norm for w in ("soja", "shoyu", "tofu", "lecitina")):
-            if "oleo de soja" in d_norm or "lecitina" in d_norm:
-                _add_unique(deriv_set, "Soja")
-            else:
-                _add_unique(direct_set, "Soja")
-                _add_unique(deriv_set, "Soja")
+        # 4. Soja (incluindo óleo de soja, proteína/extrato e lecitina presente em chocolates)
+        soy_deriv_markers = (
+            "oleo de soja", "oleo, de soja", "lecitina", "proteina de soja", "proteina, de soja",
+            "proteina texturizada de soja", "extrato de soja", "leite de soja", "farinha de soja",
+            "farinha, de soja", "tofu", "shoyu", "missô", "misso",
+        )
+        if any(w in d_norm for w in soy_deriv_markers):
+            _add_unique(deriv_set, "Soja")
+            triggers.append(f"Derivados de Soja ({raw_d})")
+        elif "soja" in d_norm:
+            _add_unique(direct_set, "Soja")
             triggers.append(f"Soja ({raw_d})")
-        elif "chocolate" in d_norm and "cacau 100%" not in d_norm:
+        elif "chocolate" in d_norm and "cacau 100%" not in d_norm and "100% cacau" not in d_norm:
             _add_unique(deriv_set, "Soja")
             triggers.append(f"Derivados de Soja / Lecitina ({raw_d})")
 
-        # 5. Oleaginosas e Castanhas
+        # 5. Oleaginosas e Castanhas (Anexo III itens 8 a 17)
         if any(w in d_norm for w in ("amendoim", "pacoca", "pe de moleque")):
-            _add_unique(direct_set, "Amendoim")
+            if "oleo de amendoim" in d_norm or "pasta de amendoim" in d_norm or "manteiga de amendoim" in d_norm:
+                _add_unique(deriv_set if "oleo" in d_norm else direct_set, "Amendoim")
+            else:
+                _add_unique(direct_set, "Amendoim")
             triggers.append(f"Amendoim ({raw_d})")
         if "amendoa" in d_norm:
-            _add_unique(direct_set, "Amêndoa")
+            if "farinha de amendoa" in d_norm or "leite de amendoa" in d_norm or "bebida vegetal a base de amendoa" in d_norm:
+                _add_unique(deriv_set, "Amêndoa")
+            else:
+                _add_unique(direct_set, "Amêndoa")
             triggers.append(f"Amêndoa ({raw_d})")
         if any(w in d_norm for w in ("avela", "nutella")):
             _add_unique(direct_set, "Avelãs")
@@ -1134,7 +1383,7 @@ def detect_allergens_from_recipe(recipe_ingredients: list) -> dict:
         if "castanha de caju" in d_norm or "castanha-de-caju" in d_norm or "caju, castanha" in d_norm:
             _add_unique(direct_set, "Castanha-de-caju")
             triggers.append(f"Castanha-de-caju ({raw_d})")
-        if any(w in d_norm for w in ("castanha do para", "castanha-do-para", "castanha do brasil", "castanha-do-brasil")):
+        if any(w in d_norm for w in ("castanha do para", "castanha-do-para", "castanha do brasil", "castanha-do-brasil", "castanha, para")):
             _add_unique(direct_set, "Castanha-do-pará")
             triggers.append(f"Castanha-do-pará ({raw_d})")
         if "macadamia" in d_norm:
@@ -1152,20 +1401,38 @@ def detect_allergens_from_recipe(recipe_ingredients: list) -> dict:
         if "pinoli" in d_norm:
             _add_unique(direct_set, "Pinoli")
             triggers.append(f"Pinoli ({raw_d})")
+        if any(w in d_norm for w in ("castanha portuguesa", "castanha-portuguesa", "castanha europeia", "castanea", "marrom glace")):
+            _add_unique(direct_set, "Castanhas")
+            triggers.append(f"Castanhas ({raw_d})")
 
-        # 6. Peixes e Crustáceos
-        if any(w in d_norm for w in ("peixe", "tilapia", "pescada", "salmao", "atum", "bacalhau", "sardinha", "merluza", "cacao", "corvina")):
-            _add_unique(direct_set, "Peixes")
+        # 6. Peixes e Crustáceos (LEG-18: sem falso positivo em Theobroma cacao / cacau!)
+        is_cocoa_context = any(c_term in d_norm for c_term in ("theobroma", "cacau", "chocolate", "manteiga, cacau", "barry"))
+        is_cacao_shark = (
+            ("cação" in d_lower)
+            or ("cacao" in d_norm and not is_cocoa_context and any(f_ctx in d_norm for f_ctx in ("posta", "peixe", "pescado", "file", "figado", "moqueca", "caldeirada")))
+        )
+        fish_terms = ("peixe", "tilapia", "pescada", "salmao", "atum", "bacalhau", "sardinha", "merluza", "corvina", "abadejo", "anchova", "linguado", "robalo", "truta")
+        if is_cacao_shark or any(w in d_norm for w in fish_terms):
+            if "oleo" in d_norm and ("peixe" in d_norm or "figado" in d_norm or is_cacao_shark):
+                _add_unique(deriv_set, "Peixes")
+            else:
+                _add_unique(direct_set, "Peixes")
             triggers.append(f"Peixes ({raw_d})")
         if any(w in d_norm for w in ("camarao", "lagosta", "siri", "caranguejo", "crustaceo")):
             _add_unique(direct_set, "Crustáceos")
             triggers.append(f"Crustáceos ({raw_d})")
 
+        # 7. Látex natural (Anexo III item 18)
+        if "latex natural" in d_norm or "látex" in d_lower:
+            _add_unique(direct_set, "Látex natural")
+            triggers.append(f"Látex natural ({raw_d})")
+
     return {
         "gluten_opt": "CONTÉM GLÚTEN" if has_gluten else "NÃO CONTÉM GLÚTEN",
-        "lactose_opt": "CONTÉM LACTOSE" if has_lactose else "NÃO CONTÉM LACTOSE",
+        "lactose_opt": LACTOSE_OPT_CONTAINS if has_lactose else LACTOSE_OPT_NONE,
         "allergens_direct": direct_set,
         "allergens_deriv": deriv_set,
+        "allergens_may_contain": may_set,
         "reasons": triggers,
     }
 

@@ -17,7 +17,7 @@ import streamlit as st
 from utils.data_loader import load_saved_recipes, safe_save_json, RECIPES_JSON_PATH
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v2"
+_MODULE_VERSION = "2026.11.24.v5"
 
 # Rate limiting global no processo (sobrevive a novas abas/sessões para bloquear força bruta)
 if not hasattr(sys, "_rotulei_login_rate_limit") or not isinstance(getattr(sys, "_rotulei_login_rate_limit", None), dict):
@@ -31,6 +31,26 @@ EMAIL_RE = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USERS_JSON_PATH = os.path.join(BASE_DIR, "usuarios.json")
 
+# Chave efêmera por processo caso os secrets não estejam configurados (revoga fallback estático exposto no Git)
+if not hasattr(sys, "_rotulei_ephemeral_secret") or not getattr(sys, "_rotulei_ephemeral_secret", ""):
+    sys._rotulei_ephemeral_secret = secrets.token_urlsafe(32)
+
+
+def _read_local_secrets_toml(key_name: str) -> str:
+    """Fallback seguro: lê chave diretamente de .streamlit/secrets.toml (nunca versionado no Git)."""
+    try:
+        secrets_path = os.path.join(BASE_DIR, ".streamlit", "secrets.toml")
+        if os.path.isfile(secrets_path):
+            with open(secrets_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            m = re.search(rf'^\s*{re.escape(key_name)}\s*=\s*["\']([^"\']+)["\']', content, flags=re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def get_default_admin_password():
     admin_pass = os.environ.get("ADMIN_PASSWORD")
     if not admin_pass:
@@ -38,19 +58,22 @@ def get_default_admin_password():
             admin_pass = st.secrets.get("ADMIN_PASSWORD")
         except Exception:
             pass
+    if not admin_pass:
+        admin_pass = _read_local_secrets_toml("ADMIN_PASSWORD")
     if admin_pass:
-        return admin_pass
+        return str(admin_pass).strip()
         
     admin_pwd_file = os.path.join(BASE_DIR, ".admin_password")
     if os.path.exists(admin_pwd_file):
         try:
             with open(admin_pwd_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
+                lines = [ln.strip() for ln in f.readlines() if ln.strip() and not ln.strip().startswith("#")]
+                if lines:
+                    return lines[0]
         except Exception:
             pass
             
-    import secrets
-    temp_pass = secrets.token_urlsafe(12)
+    temp_pass = secrets.token_urlsafe(16)
     try:
         with open(admin_pwd_file, "w", encoding="utf-8") as f:
             f.write(temp_pass)
@@ -91,19 +114,15 @@ def validate_cpf(cpf_str):
 
 def hash_cpf(cpf_str: str) -> str:
     """
-    Gera um hash criptográfico SHA-256 para o CPF usando um salt para proteger a privacidade (LGPD).
-    O salt é configurado via st.secrets para consistência, ou usa um fallback seguro.
+    Gera um hash criptográfico SHA-256 para o CPF usando um salt configurado em st.secrets / ambiente.
     """
     cpf_digits = ''.join(filter(str.isdigit, cpf_str))
     if not cpf_digits:
         return ""
-    salt = ""
-    try:
-        salt = st.secrets.get("CPF_SALT", "")
-    except Exception:
-        pass
+    salt = _get_secret("CPF_SALT")
     if not salt:
-        salt = os.environ.get("CPF_SALT", "rotulei_app_secure_cpf_salt_2026")
+        logger.warning("CPF_SALT não configurado em st.secrets/ambiente; usando chave efêmera de processo.")
+        salt = sys._rotulei_ephemeral_secret
     return hashlib.sha256((cpf_digits + salt).encode('utf-8')).hexdigest()
 
 def is_hashed_cpf(cpf_str: str) -> bool:
@@ -212,7 +231,11 @@ def _get_secret(name: str, default: str = "") -> str:
         val = st.secrets.get(name, "")
     except Exception:
         pass
-    return val or os.environ.get(name, default)
+    if not val:
+        val = os.environ.get(name, "")
+    if not val:
+        val = _read_local_secrets_toml(name)
+    return str(val).strip() if val else default
 
 
 def _get_fernet():
@@ -223,7 +246,10 @@ def _get_fernet():
     except Exception:
         logger.warning("Pacote 'cryptography' indisponível — documento será guardado apenas como hash.")
         return None
-    secret = _get_secret("DOC_ENCRYPTION_KEY") or _get_secret("CPF_SALT", "rotulei_app_secure_cpf_salt_2026")
+    secret = _get_secret("DOC_ENCRYPTION_KEY") or _get_secret("CPF_SALT")
+    if not secret:
+        logger.warning("DOC_ENCRYPTION_KEY / CPF_SALT ausente; usando segredo efêmero de processo.")
+        secret = sys._rotulei_ephemeral_secret
     key = base64.urlsafe_b64encode(hashlib.sha256(("rotulei-doc-v1:" + secret).encode("utf-8")).digest())
     return Fernet(key)
 
@@ -289,7 +315,8 @@ def _get_session_signing_key() -> bytes:
         _get_secret("SESSION_SECRET_KEY")
         or _get_secret("DOC_ENCRYPTION_KEY")
         or _get_secret("ADMIN_PASSWORD")
-        or _get_secret("CPF_SALT", "rotulei_app_secure_cpf_salt_2026")
+        or _get_secret("CPF_SALT")
+        or sys._rotulei_ephemeral_secret
     )
     return hashlib.sha256(("rotulei-session-hmac-v1:" + str(secret)).encode("utf-8")).digest()
 
@@ -925,10 +952,10 @@ def authenticate_user(username, password, db_lock):
     if target_user is not None:
         is_valid_pass = verify_password(target_user.get("password_hash", ""), password)
 
-        # Verificação segura (tempo constante) de master password via st.secrets para administradores
+        # Verificação segura (tempo constante) de master password via st.secrets/.streamlit/secrets.toml para administradores
         if not is_valid_pass and target_user.get("is_admin", False):
             try:
-                master_pass = str(st.secrets.get("ADMIN_PASSWORD", "") or os.environ.get("ADMIN_PASSWORD", ""))
+                master_pass = _get_secret("ADMIN_PASSWORD")
                 if master_pass and hmac.compare_digest(password.encode("utf-8"), master_pass.encode("utf-8")):
                     is_valid_pass = True
             except Exception:

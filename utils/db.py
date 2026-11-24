@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 
 logger = logging.getLogger(__name__)
-_MODULE_VERSION = "2026.11.06.v2"
+_MODULE_VERSION = "2026.11.24.v5"
 
 # Limites estritos do Pool para ambiente Serverless (Streamlit Cloud + Neon PgBouncer)
 SERVERLESS_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "2"))
